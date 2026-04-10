@@ -47,7 +47,7 @@ jobs:
         with:
           tauriScript: npx tauri
           tagName: ${{ github.ref_name }}
-          releaseName: 'token-tool ${{ github.ref_name }}'
+          releaseName: 'zhipukit ${{ github.ref_name }}'
           releaseBody: 'See the assets below to download the installer.'
           releaseDraft: true
           prerelease: false
