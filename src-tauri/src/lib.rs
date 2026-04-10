@@ -829,7 +829,6 @@ pub fn run() {
                                     #[cfg(target_os = "macos")]
                                     set_tray_highlight(&app, false);
                                 }
-                                _ => {}
                             }
                         }
                         TrayIconEvent::DoubleClick { .. } => {
