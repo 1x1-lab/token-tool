@@ -53,6 +53,8 @@ function handleExit() {
 function handleDrag(e: MouseEvent) {
   const target = e.target as HTMLElement
   if (target.closest('button, input, textarea, select, a, label, [data-no-drag]')) return
+  // 如果点击在 page-content 内部，但不在 page-content-drag 拖拽区域，则不触发拖拽
+  if (target.closest('.page-content') && !target.closest('.page-content-drag')) return
   invoke('start_window_drag').catch(() => {})
 }
 </script>
@@ -126,7 +128,8 @@ function handleDrag(e: MouseEvent) {
   </aside>
 
   <main class="main-area" @mousedown="handleDrag">
-    <div class="page-content" @mousedown="handleDrag">
+    <div class="page-content">
+      <div class="page-content-drag" @mousedown="handleDrag"/>
       <Transition :name="transitionName" mode="out-in">
         <BalanceQuery v-if="activeTab === 'balance'" key="balance" :api-key="apiKey" :endpoint="endpoint" />
         <TokenCalculator v-else-if="activeTab === 'calculator'" key="calculator" :api-key="apiKey" :endpoint="endpoint" />
@@ -233,7 +236,7 @@ function handleDrag(e: MouseEvent) {
 }
 
 .sidebar-bottom {
-  padding: 12px 8px 20px;
+  padding: 12px 8px 10px;
 }
 
 .nav-item {
@@ -269,18 +272,21 @@ function handleDrag(e: MouseEvent) {
   flex: 1;
   overflow: hidden;
   min-width: 0;
-  padding: 12px;
+  padding: 10px;
   background: var(--bg);
 }
-
+.page-content-drag{
+  width: 100%;
+  height: 28px;
+}
 .page-content {
   max-width: 760px;
   margin: 0 auto;
-  padding: 28px 32px 28px;
-  height: calc(100vh - 24px);
+  padding: 0 32px 28px;
+  height: calc(100vh - 20px);
   overflow-y: auto;
   background: var(--bg-card);
-  border-radius: 16px;
+  border-radius: 9px;
   box-shadow: var(--shadow-md);
 }
 

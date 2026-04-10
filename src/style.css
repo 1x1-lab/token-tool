@@ -4,7 +4,7 @@
   --sidebar-active: rgba(56, 89, 255, 0.08);
   --sidebar-text: #8b92a0;
   --sidebar-text-active: #1e293b;
-  --bg: #f8fafc;
+  --bg: #eef1f5;
   --bg-card: #ffffff;
   --text: #1e293b;
   --text-secondary: #64748b;
@@ -34,7 +34,7 @@
     --sidebar-active: rgba(91, 122, 255, 0.12);
     --sidebar-text: #5a5f72;
     --sidebar-text-active: #d4d7e0;
-    --bg: #0b1120;
+    --bg: #070d1a;
     --bg-card: #131c2e;
     --text: #e2e8f0;
     --text-secondary: #64748b;
@@ -137,4 +137,22 @@ select {
 
 ::-webkit-scrollbar-thumb:hover {
   background: var(--text-secondary);
+}
+
+.page-content::-webkit-scrollbar {
+  width: 5px;
+}
+
+.page-content::-webkit-scrollbar-track {
+  background: transparent;
+  margin: 8px 0;
+}
+
+.page-content::-webkit-scrollbar-thumb {
+  background: rgba(100, 116, 139, 0.25);
+  border-radius: 2px;
+}
+
+.page-content::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 116, 139, 0.45);
 }

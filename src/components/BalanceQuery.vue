@@ -199,9 +199,11 @@ setInterval(() => { now.value = Date.now() }, 1000)
 function formatCountdown(ms: number): string {
   if (ms <= 0) return '即将重置'
   const totalSec = Math.floor(ms / 1000)
-  const h = Math.floor(totalSec / 3600)
+  const d = Math.floor(totalSec / 86400)
+  const h = Math.floor((totalSec % 86400) / 3600)
   const m = Math.floor((totalSec % 3600) / 60)
   const s = totalSec % 60
+  if (d > 0) return `${d}天${h}时${m}分`
   if (h > 0) return `${h}时${m}分${s}秒`
   if (m > 0) return `${m}分${s}秒`
   return `${s}秒`

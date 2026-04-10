@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, onBeforeUnmount } from 'vue'
+import { ref, watch, onMounted, onBeforeUnmount } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 
@@ -16,6 +16,36 @@ const autoRefresh = ref(localStorage.getItem('zhipu_auto_refresh') === 'true')
 const refreshInterval = ref(Number(localStorage.getItem('zhipu_refresh_interval') || '30'))
 // 已生效的间隔（用于倒计时计算，只有保存后才更新）
 const appliedInterval = ref(refreshInterval.value)
+
+const autoStart = ref(false)
+let autostartModule: typeof import('@tauri-apps/plugin-autostart') | null = null
+
+onMounted(async () => {
+  try {
+    autostartModule = await import('@tauri-apps/plugin-autostart')
+    autoStart.value = await autostartModule.isEnabled()
+  } catch (e) {
+    console.error('autostart plugin load failed:', e)
+  }
+})
+
+async function toggleAutoStart() {
+  if (!autostartModule) {
+    alert('开机启动插件未加载')
+    return
+  }
+  try {
+    if (autoStart.value) {
+      await autostartModule.disable()
+      autoStart.value = false
+    } else {
+      await autostartModule.enable()
+      autoStart.value = true
+    }
+  } catch (e) {
+    alert('开机启动设置失败: ' + e)
+  }
+}
 
 // 倒计时：基于已生效的间隔计算
 const now = ref(Date.now())
@@ -261,6 +291,23 @@ watch([apiKey, endpoint], () => {
       </svg>
       {{ saved ? '已保存' : '保存设置' }}
     </button>
+
+    <div class="setting-card">
+      <div class="card-header">
+        <div class="card-icon autostart-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/>
+          </svg>
+        </div>
+        <div>
+          <div class="card-title">开机启动</div>
+          <div class="card-desc">系统登录时自动启动 ZhipuKit</div>
+        </div>
+        <button :class="['toggle-switch', { on: autoStart }]" @click="toggleAutoStart" @mousedown.stop>
+          <span class="toggle-knob"></span>
+        </button>
+      </div>
+    </div>
 
     <div class="setting-card">
       <div class="card-header">
@@ -622,6 +669,11 @@ watch([apiKey, endpoint], () => {
 .dev-icon {
   background: rgba(139, 92, 246, 0.08);
   color: #8b5cf6;
+}
+
+.autostart-icon {
+  background: var(--success-light);
+  color: var(--success);
 }
 
 .dev-actions {

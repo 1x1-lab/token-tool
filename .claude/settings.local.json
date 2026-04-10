@@ -10,7 +10,17 @@
       "Bash(cargo check:*)",
       "Bash(npx tauri:*)",
       "Bash(npm run:*)",
-      "Bash(grep -E \"\\\\.\\(json|yaml|yml|toml\\)$\")"
+      "Bash(grep -E \"\\\\.\\(json|yaml|yml|toml\\)$\")",
+      "Bash(npm install:*)",
+      "Bash(grep -rn \"ns_status_item\\\\|NSStatusItem\\\\|status_item\\\\|raw\\\\|native\" target/debug/.fingerprint/tauri-*/lib-*)",
+      "Bash(find ~/.cargo/registry/src -path \"*/tauri-2.*/src/tray/mod.rs\" -exec grep -n \"pub fn\" {} \\\\;)",
+      "Bash(find ~/.cargo/registry/src -path \"*/tray-icon-*/src/lib.rs\" -exec grep -n \"pub fn\\\\|pub.*fn\\\\|highlight\\\\|pressed\" {} \\\\;)",
+      "Bash(grep:*)",
+      "Bash(cargo search:*)",
+      "Bash(cargo update:*)",
+      "Bash(lsof -ti:5174)",
+      "Bash(xargs kill:*)",
+      "Bash(sips -g all /Users/xiaotian/MyProject/Application/token-tool/src-tauri/icons/icon.icns)"
     ]
   }
 }

@@ -82,9 +82,11 @@ const timer = setInterval(() => { now.value = Date.now() }, 1000)
 function formatCountdown(ms: number): string {
   if (ms <= 0) return '即将重置'
   const totalSec = Math.floor(ms / 1000)
-  const h = Math.floor(totalSec / 3600)
+  const d = Math.floor(totalSec / 86400)
+  const h = Math.floor((totalSec % 86400) / 3600)
   const m = Math.floor((totalSec % 3600) / 60)
   const s = totalSec % 60
+  if (d > 0) return `${d}天${h}时`
   if (h > 0) return `${h}h${m}m`
   if (m > 0) return `${m}m${s}s`
   return `${s}s`
@@ -165,7 +167,7 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .tray-popup {
-  padding: 6px 4px;
+  padding: 4px;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -179,7 +181,13 @@ onBeforeUnmount(() => {
 }
 
 .popup-section {
-  padding: 2px 4px;
+  padding: 2px 0;
+}
+
+.popup-section + .popup-section {
+  border-top: 1px solid var(--border);
+  margin-top: 2px;
+  padding-top: 5px;
 }
 
 .balance-row {
@@ -190,8 +198,8 @@ onBeforeUnmount(() => {
 }
 
 .balance-value {
-  font-size: 15px;
-  font-weight: 700;
+  font-size: 13px;
+  font-weight: 600;
   color: var(--accent);
   font-variant-numeric: tabular-nums;
 }
@@ -201,10 +209,16 @@ onBeforeUnmount(() => {
 }
 
 .plan-item + .plan-item {
-  border-top: 1px solid var(--border);
-  margin-top: 2px;
-  padding-top: 5px;
+  padding-top: 0;
 }
+
+.plan-item + .plan-item::before{
+    content: '';
+    display: block;
+    border-top: 1px dashed var(--border);
+    margin: 0 0 1px;
+    /* background: var(--border); */
+ }
 
 .plan-row {
   display: flex;

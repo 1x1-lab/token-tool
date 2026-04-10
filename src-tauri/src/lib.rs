@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use tauri::{
-    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    tray::{MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Emitter, Manager,
 };
 
@@ -633,6 +633,8 @@ async fn confirm_minimize_to_tray(app: tauri::AppHandle, state: tauri::State<'_,
         if let Some(window) = app.get_webview_window("main") {
             let _ = window.hide();
         }
+        #[cfg(target_os = "macos")]
+        let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
     }
     Ok(())
 }
@@ -672,6 +674,8 @@ async fn resize_popup(app: tauri::AppHandle, width: f64, height: f64) -> Result<
 
 #[tauri::command]
 async fn tray_show_main(app: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.set_focus();
@@ -680,6 +684,22 @@ async fn tray_show_main(app: tauri::AppHandle) -> Result<(), String> {
         let _ = popup.hide();
     }
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn set_tray_highlight(app: &tauri::AppHandle, highlighted: bool) {
+    use objc2::msg_send;
+    if let Some(tray) = app.tray_by_id("main-tray") {
+        let _ = tray.with_inner_tray_icon(move |inner| {
+            if let Some(ns_status_item) = inner.ns_status_item() {
+                let button: &objc2::runtime::AnyObject =
+                    unsafe { msg_send![&*ns_status_item, button] };
+                unsafe {
+                    let _: () = msg_send![button, setHighlighted: highlighted];
+                }
+            }
+        });
+    }
 }
 
 fn show_popup(app: &tauri::AppHandle) -> Result<(), String> {
@@ -781,6 +801,10 @@ fn format_amount(v: f64) -> String {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_log::Builder::default().build())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .manage(AppState {
             client: reqwest::Client::new(),
             refresh_handle: Mutex::new(None),
@@ -790,13 +814,22 @@ pub fn run() {
         .setup(|app| {
             let _tray = TrayIconBuilder::with_id("main-tray")
                 .icon(app.default_window_icon().unwrap().clone())
+                .icon_as_template(true)
                 .tooltip("ZhipuKit")
                 .on_tray_icon_event(|tray, event| {
                     match event {
-                        TrayIconEvent::Click { button, button_state, .. } => {
-                            if button == MouseButton::Left && button_state == MouseButtonState::Up {
-                                let app = tray.app_handle();
-                                let _ = show_popup(&app);
+                        TrayIconEvent::Click { button_state, .. } => {
+                            match button_state {
+                                MouseButtonState::Down => {
+                                    let app = tray.app_handle();
+                                    let _ = show_popup(&app);
+                                }
+                                MouseButtonState::Up => {
+                                    let app = tray.app_handle();
+                                    #[cfg(target_os = "macos")]
+                                    set_tray_highlight(&app, false);
+                                }
+                                _ => {}
                             }
                         }
                         TrayIconEvent::DoubleClick { .. } => {
@@ -814,7 +847,7 @@ pub fn run() {
                 })
                 .build(app)?;
 
-            // 监听窗口关闭事件
+            // 监听主窗口关闭事件
             if let Some(window) = app.get_webview_window("main") {
                 let app_handle = app.handle().clone();
                 window.on_window_event(move |event| {
@@ -832,7 +865,24 @@ pub fn run() {
                             if let Some(w) = app_handle.get_webview_window("main") {
                                 let _ = w.hide();
                             }
+                            #[cfg(target_os = "macos")]
+                            let _ = app_handle.set_activation_policy(tauri::ActivationPolicy::Accessory);
                         }
+                    }
+                });
+            }
+
+            // popup 失焦或主窗口移动时自动隐藏
+            if let Some(popup) = app.get_webview_window("tray-popup") {
+                let app_handle = app.handle().clone();
+                popup.on_window_event(move |event| {
+                    match event {
+                        tauri::WindowEvent::Focused(false) => {
+                            if let Some(p) = app_handle.get_webview_window("tray-popup") {
+                                let _ = p.hide();
+                            }
+                        }
+                        _ => {}
                     }
                 });
             }
