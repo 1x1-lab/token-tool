@@ -7,12 +7,17 @@ license = ""
 repository = ""
 edition = "2021"
 rust-version = "1.77.2"
+default-run = "app"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [lib]
 name = "app_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "zhipukit-status"
+path = "src/bin/status.rs"
 
 [build-dependencies]
 tauri-build = { version = "2.5.6", features = [] }

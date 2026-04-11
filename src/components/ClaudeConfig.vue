@@ -23,12 +23,18 @@ interface ClaudeCodeConfig {
   anthropic_default_sonnet_model: string | null
   anthropic_default_opus_model: string | null
   api_timeout_ms: string | null
+  broken_plugins: string[]
 }
 
 const status = ref<ClaudeCodeStatus | null>(null)
 const loading = ref(false)
 const error = ref('')
 const saved = ref(false)
+
+// Hook 相关状态
+const hookEnabled = ref(false)
+const hookLoading = ref(false)
+const hookTestResult = ref('')
 
 const model = ref('')
 const authToken = ref('')
@@ -38,6 +44,8 @@ const haikuModel = ref('')
 const sonnetModel = ref('')
 const opusModel = ref('')
 const timeoutMs = ref('')
+const brokenPlugins = ref<string[]>([])
+const fixingPlugins = ref(false)
 
 async function detect() {
   try {
@@ -57,6 +65,7 @@ async function loadConfig() {
     sonnetModel.value = config.anthropic_default_sonnet_model ?? ''
     opusModel.value = config.anthropic_default_opus_model ?? ''
     timeoutMs.value = config.api_timeout_ms ?? ''
+    brokenPlugins.value = config.broken_plugins ?? []
     error.value = ''
   } catch (e) {
     error.value = String(e)
@@ -81,14 +90,70 @@ async function saveConfig() {
   }
 }
 
+async function fixBrokenPlugins() {
+  fixingPlugins.value = true
+  try {
+    // 通过 setup_claude_hook 触发插件清理（不改变 hook 状态）
+    await invoke('setup_claude_hook', { enabled: hookEnabled.value })
+    brokenPlugins.value = []
+  } catch (e) {
+    error.value = String(e)
+  }
+  fixingPlugins.value = false
+}
+
 async function refresh() {
   loading.value = true
   error.value = ''
   await detect()
   if (status.value?.installed) {
     await loadConfig()
+    await checkHookStatus()
   }
   loading.value = false
+}
+
+async function checkHookStatus() {
+  try {
+    const result = await invoke<{ installed: boolean }>('check_claude_hook_status')
+    hookEnabled.value = result.installed
+  } catch {
+    hookEnabled.value = false
+  }
+}
+
+async function installHook() {
+  hookLoading.value = true
+  hookTestResult.value = ''
+  try {
+    await invoke('setup_claude_hook', { enabled: true })
+    hookEnabled.value = true
+  } catch (e) {
+    error.value = String(e)
+  }
+  hookLoading.value = false
+}
+
+async function uninstallHook() {
+  hookLoading.value = true
+  hookTestResult.value = ''
+  try {
+    await invoke('setup_claude_hook', { enabled: false })
+    hookEnabled.value = false
+  } catch (e) {
+    error.value = String(e)
+  }
+  hookLoading.value = false
+}
+
+async function testHook() {
+  hookTestResult.value = '运行中...'
+  try {
+    const result = await invoke<string>('test_zhipukit_status')
+    hookTestResult.value = result
+  } catch (e) {
+    hookTestResult.value = `错误: ${e}`
+  }
 }
 
 const copiedPath = ref('')
@@ -161,6 +226,74 @@ onMounted(() => refresh())
           <svg v-if="copiedPath !== status.config_path" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
           <svg v-else width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
         </button>
+      </div>
+    </div>
+
+    <!-- 插件异常警告 -->
+    <div v-if="brokenPlugins.length > 0 && status?.installed" class="warning-banner">
+      <div class="warning-content">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+          <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+        </svg>
+        <div>
+          <div class="warning-title">检测到无效插件</div>
+          <div class="warning-desc">
+            以下插件安装不完整，可能导致 SessionStart hook 报错：
+            <code v-for="p in brokenPlugins" :key="p" class="broken-plugin-name">{{ p }}</code>
+          </div>
+        </div>
+      </div>
+      <button class="fix-btn" @click="fixBrokenPlugins" :disabled="fixingPlugins">
+        {{ fixingPlugins ? '修复中...' : '一键修复' }}
+      </button>
+    </div>
+
+    <!-- 会话注入 -->
+    <div v-if="status?.installed" class="setting-card">
+      <div class="card-header">
+        <div class="card-icon hook-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/>
+          </svg>
+        </div>
+        <div>
+          <div class="card-title">会话注入</div>
+          <div class="card-desc">在 Claude Code 启动时自动显示智谱套餐信息</div>
+        </div>
+        <button
+          v-if="!hookEnabled"
+          class="hook-action-btn install-btn"
+          @click="installHook"
+          :disabled="hookLoading"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+          </svg>
+          {{ hookLoading ? '处理中...' : '安装' }}
+        </button>
+        <button
+          v-else
+          class="hook-action-btn uninstall-btn"
+          @click="uninstallHook"
+          :disabled="hookLoading"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+          </svg>
+          {{ hookLoading ? '处理中...' : '卸载' }}
+        </button>
+      </div>
+      <div v-if="hookEnabled" class="hook-details">
+        <button class="dev-btn" @click="testHook" :disabled="hookTestResult === '运行中...'">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="5 3 19 12 5 21 5 3"/>
+          </svg>
+          测试输出
+        </button>
+        <div v-if="hookTestResult" :class="['debug-output', { ok: !hookTestResult.startsWith('错误'), fail: hookTestResult.startsWith('错误') }]">
+          <pre>{{ hookTestResult }}</pre>
+        </div>
       </div>
     </div>
 
@@ -577,4 +710,146 @@ onMounted(() => refresh())
   cursor: pointer;
   padding: 0 4px;
 }
+
+.hook-icon {
+  background: var(--success-light);
+  color: var(--success);
+}
+
+.hook-details {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.hook-action-btn {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-radius: var(--radius-xs);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.hook-action-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.install-btn {
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  color: #fff;
+}
+
+.install-btn:hover:not(:disabled) {
+  opacity: 0.85;
+}
+
+.uninstall-btn {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+}
+
+.uninstall-btn:hover:not(:disabled) {
+  border-color: var(--danger, #ef4444);
+  color: var(--danger, #ef4444);
+  background: var(--danger-light, rgba(239, 68, 68, 0.08));
+}
+
+.debug-output {
+  margin-top: 4px;
+  border-radius: var(--radius-xs);
+  overflow: hidden;
+}
+
+.debug-output pre {
+  padding: 12px 14px;
+  font-size: 11px;
+  line-height: 1.6;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  white-space: pre-wrap;
+  word-break: break-all;
+  margin: 0;
+}
+
+.debug-output.ok {
+  background: var(--success-light);
+  border: 1px solid var(--success);
+}
+
+.debug-output.ok pre { color: var(--success); }
+
+.debug-output.fail {
+  background: var(--danger-light);
+  border: 1px solid var(--danger);
+}
+
+.debug-output.fail pre { color: var(--danger); }
+
+.warning-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  background: var(--warning-light, rgba(245, 158, 11, 0.08));
+  border: 1px solid var(--warning, #f59e0b);
+  border-radius: var(--radius-xs, 6px);
+  color: var(--warning, #f59e0b);
+  gap: 12px;
+}
+
+.warning-content {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+}
+
+.warning-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.warning-desc {
+  font-size: 11px;
+  margin-top: 2px;
+  opacity: 0.85;
+  line-height: 1.5;
+}
+
+.broken-plugin-name {
+  display: inline-block;
+  background: rgba(245, 158, 11, 0.15);
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  margin: 2px 2px 0;
+}
+
+.fix-btn {
+  flex-shrink: 0;
+  padding: 5px 14px;
+  background: var(--warning, #f59e0b);
+  border: none;
+  border-radius: var(--radius-xs, 6px);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s;
+  white-space: nowrap;
+}
+
+.fix-btn:hover:not(:disabled) { opacity: 0.85; }
+.fix-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 </style>

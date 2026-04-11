@@ -8,6 +8,109 @@ use tauri::{
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
+/// 将查询结果写入 zhipukit-cache.json，供 zhipukit-status.exe (statusline) 复用
+fn write_status_cache(balance: &BalanceInfo, plan: &CodingPlanInfo) {
+    if let Ok(home) = get_home_dir() {
+        let cache_path = home.join(".claude").join("zhipukit-cache.json");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+
+        // 格式化输出文本，与 zhipukit-status.exe 的格式保持一致
+        let mut line1 = format!("ZhipuKit {}", plan.level.to_uppercase());
+        line1.push_str(&format!(" | ¥{}", format_amount(balance.available_balance)));
+
+        // 获取 git 分支
+        let git_branch = std::process::Command::new("git")
+            .args(["branch", "--show-current"])
+            .output()
+            .ok()
+            .and_then(|o| {
+                if o.status.success() {
+                    Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default();
+        if !git_branch.is_empty() {
+            line1.push_str(&format!(" | Git ({})", git_branch));
+        }
+
+        let mut quota_parts: Vec<String> = Vec::new();
+
+        // 5h 额度
+        if plan.hour5_percentage > 0 {
+            let pct = plan.hour5_percentage;
+            let bar = format_status_bar(pct, 8);
+            let mut s = format!("5h {}{} {}", bar, "%", pct);
+            if plan.hour5_next_reset > 0 {
+                let remaining_ms = (plan.hour5_next_reset - now).max(0);
+                let elapsed_ms = (5 * 3600 * 1000 - remaining_ms).max(0);
+                s.push_str(&format!(" ({}/5h)", format_remaining(elapsed_ms)));
+            }
+            quota_parts.push(s);
+        }
+
+        // MCP
+        if plan.mcp_total > 0 {
+            let pct = (plan.mcp_used * 100 / plan.mcp_total).min(100);
+            let bar = format_status_bar(pct, 8);
+            let mut s = format!("MCP {}", bar);
+            let mut time_info = format!("{}/{}", plan.mcp_used, plan.mcp_total);
+            if plan.mcp_next_reset > 0 {
+                let remaining_ms = (plan.mcp_next_reset - now).max(0);
+                let elapsed_ms = (30 * 24 * 3600 * 1000 - remaining_ms).max(0);
+                let d = elapsed_ms / (24 * 3600 * 1000);
+                let h = (elapsed_ms % (24 * 3600 * 1000)) / (3600 * 1000);
+                time_info.push_str(&format!(" | {}d {}h/30d", d, h));
+            }
+            s.push_str(&format!(" ({})", time_info));
+            quota_parts.push(s);
+        }
+
+        let output = if quota_parts.is_empty() {
+            line1
+        } else {
+            format!("{}\n{}", line1, quota_parts.join(" | "))
+        };
+
+        let _ = std::fs::write(&cache_path, serde_json::json!({
+            "cached_at": now,
+            "output": output
+        }).to_string());
+    }
+}
+
+/// ANSI 彩色进度条（与 zhipukit-status.exe 保持一致）
+fn format_status_bar(percentage: i64, length: usize) -> String {
+    let pct = (percentage.clamp(0, 100) as f64) / 100.0;
+    let filled = (pct * length as f64).round() as usize;
+    let empty = length - filled;
+    let color = if percentage >= 70 {
+        "\x1b[31m"
+    } else if percentage >= 50 {
+        "\x1b[33m"
+    } else {
+        "\x1b[32m"
+    };
+    let reset = "\x1b[0m";
+    format!("{}{}{}{}", color, "█".repeat(filled), reset, "░".repeat(empty))
+}
+
+/// 格式化剩余时间
+fn format_remaining(ms: i64) -> String {
+    let secs = ms / 1000;
+    let h = secs / 3600;
+    let m = (secs % 3600) / 60;
+    if h > 0 {
+        format!("{}h {}m", h, m)
+    } else {
+        format!("{}m", m)
+    }
+}
+
 /// 创建 shell 命令，Windows 上隐藏控制台窗口
 fn build_shell_command(program: &str, args: &[&str]) -> tokio::process::Command {
     let mut cmd = tokio::process::Command::new(program);
@@ -73,6 +176,7 @@ pub struct ClaudeCodeConfig {
     pub anthropic_default_sonnet_model: Option<String>,
     pub anthropic_default_opus_model: Option<String>,
     pub api_timeout_ms: Option<String>,
+    pub broken_plugins: Vec<String>,
 }
 
 fn get_home_dir() -> Result<std::path::PathBuf, String> {
@@ -156,6 +260,9 @@ async fn read_claude_config() -> Result<ClaudeCodeConfig, String> {
 
     let env = raw.get("env");
 
+    // 检测无效插件引用
+    let broken_plugins = find_broken_plugins(&raw, &home);
+
     Ok(ClaudeCodeConfig {
         model: raw.get("model").and_then(|v| v.as_str()).map(String::from),
         anthropic_auth_token: env.and_then(|e| e.get("ANTHROPIC_AUTH_TOKEN")).and_then(|v| v.as_str()).map(String::from),
@@ -164,6 +271,7 @@ async fn read_claude_config() -> Result<ClaudeCodeConfig, String> {
         anthropic_default_sonnet_model: env.and_then(|e| e.get("ANTHROPIC_DEFAULT_SONNET_MODEL")).and_then(|v| v.as_str()).map(String::from),
         anthropic_default_opus_model: env.and_then(|e| e.get("ANTHROPIC_DEFAULT_OPUS_MODEL")).and_then(|v| v.as_str()).map(String::from),
         api_timeout_ms: env.and_then(|e| e.get("API_TIMEOUT_MS")).and_then(|v| v.as_str()).map(String::from),
+        broken_plugins,
     })
 }
 
@@ -224,6 +332,288 @@ async fn save_claude_config(
         .map_err(|e| format!("写入配置失败: {}", e))?;
 
     Ok(())
+}
+
+/// 验证 enabledPlugins 中引用的插件是否有效安装
+/// 返回需要移除的插件 key 列表
+fn find_broken_plugins(settings: &serde_json::Value, home: &std::path::Path) -> Vec<String> {
+    let Some(plugins) = settings.get("enabledPlugins").and_then(|p| p.as_object()) else {
+        return vec![];
+    };
+
+    // 读取 installed_plugins.json 获取安装路径
+    let installed_path = home.join(".claude").join("plugins").join("installed_plugins.json");
+    let installed_content = std::fs::read_to_string(&installed_path).unwrap_or_default();
+    let installed: serde_json::Value = serde_json::from_str(&installed_content).unwrap_or(serde_json::json!({}));
+    let installed_plugins = installed.get("plugins").and_then(|p| p.as_object());
+
+    let mut broken = Vec::new();
+
+    for (key, enabled) in plugins {
+        // 只检查启用的插件
+        if !enabled.as_bool().unwrap_or(false) {
+            continue;
+        }
+
+        let is_valid = installed_plugins
+            .and_then(|map| map.get(key))
+            .and_then(|entries| entries.as_array())
+            .map(|entries| {
+                entries.iter().any(|entry| {
+                    // 检查安装路径是否存在且包含 plugin.json
+                    entry.get("installPath")
+                        .and_then(|p| p.as_str())
+                        .map(|path| {
+                            let install_dir = std::path::Path::new(path);
+                            install_dir.exists()
+                                && (install_dir.join(".claude-plugin").join("plugin.json").exists()
+                                    || install_dir.join("plugin.json").exists())
+                        })
+                        .unwrap_or(false)
+                })
+            })
+            .unwrap_or(false);
+
+        if !is_valid {
+            // 再检查 marketplace 目录中是否有完整安装
+            let marketplace_valid = check_marketplace_plugin(key, home);
+            if !marketplace_valid {
+                broken.push(key.clone());
+            }
+        }
+    }
+
+    broken
+}
+
+/// 检查 marketplace 中是否有该插件的完整安装
+fn check_marketplace_plugin(key: &str, home: &std::path::Path) -> bool {
+    // key 格式: "plugin-name@marketplace-name"
+    let parts: Vec<&str> = key.splitn(2, '@').collect();
+    if parts.len() != 2 {
+        return false;
+    }
+    let (plugin_name, marketplace) = (parts[0], parts[1]);
+
+    let plugin_dir = home
+        .join(".claude")
+        .join("plugins")
+        .join("marketplaces")
+        .join(marketplace)
+        .join("plugins")
+        .join(plugin_name);
+
+    if !plugin_dir.exists() {
+        return false;
+    }
+
+    // 必须有 .claude-plugin/plugin.json 才算完整
+    plugin_dir.join(".claude-plugin").join("plugin.json").exists()
+}
+
+/// 清理 settings.json 中无效的插件引用，确保 SessionStart hook 不被插件加载失败阻塞
+fn cleanup_broken_plugins(raw: &mut serde_json::Value, home: &std::path::Path) -> Vec<String> {
+    let broken = find_broken_plugins(raw, home);
+
+    if broken.is_empty() {
+        return vec![];
+    }
+
+    if let Some(plugins) = raw.get_mut("enabledPlugins").and_then(|p| p.as_object_mut()) {
+        for key in &broken {
+            plugins.remove(key);
+        }
+        // 如果 enabledPlugins 变空了，移除整个字段
+        if plugins.is_empty() {
+            if let Some(obj) = raw.as_object_mut() {
+                obj.remove("enabledPlugins");
+            }
+        }
+    }
+
+    broken
+}
+
+#[tauri::command]
+async fn setup_claude_hook(enabled: bool) -> Result<(), String> {
+    let home = get_home_dir()?;
+
+    // 解析 zhipukit-status 二进制路径
+    let exe_dir = std::env::current_exe()
+        .map_err(|e| format!("获取路径失败: {}", e))?
+        .parent()
+        .ok_or("无法确定 exe 目录")?
+        .to_path_buf();
+    let status_bin = if cfg!(windows) {
+        exe_dir.join("zhipukit-status.exe")
+    } else {
+        exe_dir.join("zhipukit-status")
+    };
+
+    if enabled && !status_bin.exists() {
+        return Err(format!(
+            "找不到 zhipukit-status 二进制: {}",
+            status_bin.display()
+        ));
+    }
+
+    let config_path = home.join(".claude").join("settings.json");
+    let mut raw: serde_json::Value = if config_path.exists() {
+        let content = tokio::fs::read_to_string(&config_path)
+            .await
+            .map_err(|e| format!("读取配置失败: {}", e))?;
+        serde_json::from_str(&content).unwrap_or(serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    // 容错：清理无效的插件引用
+    let broken = cleanup_broken_plugins(&mut raw, &home);
+    if !broken.is_empty() {
+        log::warn!("已清理无效插件引用: {:?}", broken);
+    }
+
+    // 清理旧的 SessionStart hook（兼容从旧版本升级）
+    if let Some(hooks) = raw.get_mut("hooks") {
+        if let Some(session_hooks) = hooks.get_mut("SessionStart").and_then(|v| v.as_array_mut()) {
+            session_hooks.retain(|entry| {
+                if let Some(h) = entry.get("hooks").and_then(|h| h.as_array()) {
+                    return !h.iter().any(|h| {
+                        h.get("command")
+                            .and_then(|c| c.as_str())
+                            .map(|s| s.contains("zhipukit-status"))
+                            .unwrap_or(false)
+                    });
+                }
+                true
+            });
+            // 如果 SessionStart 变空了，清理
+            if session_hooks.is_empty() {
+                if let Some(hooks_obj) = hooks.as_object_mut() {
+                    hooks_obj.remove("SessionStart");
+                    if hooks_obj.is_empty() {
+                        if let Some(obj) = raw.as_object_mut() {
+                            obj.remove("hooks");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if enabled {
+        // 设置 statusLine：Claude Code 会周期性调用此命令，将 stdout 渲染到输入框下方
+        let command_path = status_bin.to_string_lossy().to_string().replace('\\', "/");
+        raw["statusLine"] = serde_json::json!({
+            "type": "command",
+            "command": command_path
+        });
+    } else {
+        // 移除 statusLine
+        if let Some(obj) = raw.as_object_mut() {
+            obj.remove("statusLine");
+        }
+    }
+
+    let output = serde_json::to_string_pretty(&raw)
+        .map_err(|e| format!("序列化失败: {}", e))?;
+    tokio::fs::write(&config_path, output)
+        .await
+        .map_err(|e| format!("写入配置失败: {}", e))?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn check_claude_hook_status() -> Result<serde_json::Value, String> {
+    let home = get_home_dir()?;
+    let config_path = home.join(".claude").join("settings.json");
+
+    if !config_path.exists() {
+        return Ok(serde_json::json!({ "installed": false }));
+    }
+
+    let content = tokio::fs::read_to_string(&config_path)
+        .await
+        .map_err(|e| format!("读取配置失败: {}", e))?;
+    let raw: serde_json::Value = serde_json::from_str(&content)
+        .unwrap_or(serde_json::json!({}));
+
+    // 检查 statusLine 或旧的 SessionStart hook
+    let has_statusline = raw
+        .get("statusLine")
+        .and_then(|s| s.get("command"))
+        .and_then(|c| c.as_str())
+        .map(|s| s.contains("zhipukit-status"))
+        .unwrap_or(false);
+
+    let has_hook = raw
+        .get("hooks")
+        .and_then(|h| h.get("SessionStart"))
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter().any(|entry| {
+                entry
+                    .get("hooks")
+                    .and_then(|h| h.as_array())
+                    .map(|hooks| {
+                        hooks.iter().any(|h| {
+                            h.get("command")
+                                .and_then(|c| c.as_str())
+                                .map(|s| s.contains("zhipukit-status"))
+                                .unwrap_or(false)
+                        })
+                    })
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false);
+
+    Ok(serde_json::json!({ "installed": has_statusline || has_hook }))
+}
+
+#[tauri::command]
+async fn test_zhipukit_status() -> Result<String, String> {
+    let exe_dir = std::env::current_exe()
+        .map_err(|e| format!("获取路径失败: {}", e))?
+        .parent()
+        .ok_or("无法确定 exe 目录")?
+        .to_path_buf();
+    let status_bin = if cfg!(windows) {
+        exe_dir.join("zhipukit-status.exe")
+    } else {
+        exe_dir.join("zhipukit-status")
+    };
+
+    if !status_bin.exists() {
+        return Err(format!("找不到 zhipukit-status: {}", status_bin.display()));
+    }
+
+    let mut cmd = tokio::process::Command::new(status_bin.to_string_lossy().to_string());
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    let output = cmd
+        .output()
+        .await
+        .map_err(|e| format!("执行失败: {}", e))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+    if output.status.success() {
+        // 解析 JSON 输出，提取 additionalContext 用于前端展示
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(stdout.trim()) {
+            let ctx = json
+                .get("hookSpecificOutput")
+                .and_then(|o| o.get("additionalContext"))
+                .and_then(|v| v.as_str())
+                .unwrap_or(&stdout);
+            Ok(ctx.to_string())
+        } else {
+            Ok(stdout.trim().to_string())
+        }
+    } else {
+        Err(format!("{}{}", stdout, stderr).trim().to_string())
+    }
 }
 
 #[derive(Default)]
@@ -601,10 +991,14 @@ async fn update_tray_data(app: tauri::AppHandle, state: tauri::State<'_, AppStat
     {
         let mut tray_data = state.tray_data.lock().unwrap();
         if balance.is_some() {
-            tray_data.balance = balance;
+            tray_data.balance = balance.clone();
         }
         if coding_plan.is_some() {
-            tray_data.coding_plan = coding_plan;
+            tray_data.coding_plan = coding_plan.clone();
+        }
+        // 两个数据都有时写入 statusline 缓存
+        if let (Some(ref b), Some(ref p)) = (tray_data.balance, tray_data.coding_plan) {
+            write_status_cache(b, p);
         }
     }
     // 更新 tooltip：余额 + 额度摘要
@@ -812,7 +1206,7 @@ pub fn run() {
         .plugin(tauri_plugin_log::Builder::default().build())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
-            None,
+            Some(vec!["--autostart"]),
         ))
         .manage(AppState {
             client: reqwest::Client::new(),
@@ -821,6 +1215,18 @@ pub fn run() {
             minimize_to_tray: Mutex::new(false),
         })
         .setup(|app| {
+            // 开机自启时隐藏主窗口，直接后台运行
+            let is_autostart = std::env::args().any(|a| a == "--autostart");
+            if is_autostart {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.hide();
+                }
+                let state = app.state::<AppState>();
+                *state.minimize_to_tray.lock().unwrap() = true;
+                #[cfg(target_os = "macos")]
+                let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            }
+
             let _tray = TrayIconBuilder::with_id("main-tray")
                 .icon(app.default_window_icon().unwrap().clone())
                 .icon_as_template(true)
@@ -913,7 +1319,10 @@ pub fn run() {
             resize_popup,
             detect_claude_code,
             read_claude_config,
-            save_claude_config
+            save_claude_config,
+            setup_claude_hook,
+            check_claude_hook_status,
+            test_zhipukit_status
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

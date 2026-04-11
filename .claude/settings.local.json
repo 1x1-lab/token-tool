@@ -20,7 +20,16 @@
       "Bash(cargo update:*)",
       "Bash(lsof -ti:5174)",
       "Bash(xargs kill:*)",
-      "Bash(sips -g all /Users/xiaotian/MyProject/Application/token-tool/src-tauri/icons/icon.icns)"
+      "Bash(sips -g all /Users/xiaotian/MyProject/Application/token-tool/src-tauri/icons/icon.icns)",
+      "Bash(cargo build:*)",
+      "Bash(npm root:*)",
+      "Read(//d/MyProjects/token-tool/**)",
+      "Bash(taskkill //F //PID 28720)",
+      "Bash(netstat -ano)",
+      "Bash(\"C:\\\\Users\\\\Tian\\\\AppData\\\\Local\\\\ZhipuKit\\\\zhipukit-status.exe\")",
+      "Bash(echo \"EXIT CODE: $?\")",
+      "Read(//tmp/claude-hud/**)",
+      "Read(//tmp/**)"
     ]
   }
 }
