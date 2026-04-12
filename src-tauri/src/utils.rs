@@ -46,7 +46,7 @@ pub fn format_amount(v: f64) -> String {
 
 /// ANSI 彩色进度条（与 zhipukit-claude-code-plugin.exe 保持一致）
 /// 每个圆代表 5%，0-50% 映射到整个条（50%+ 全满，颜色仍按 70%/85% 变化）
-/// 已完成的圆显示 ●，当前位置显示空心彩色 ○，未到达的显示默认色 ○
+/// 填充级别：○ → ◔ → ◑ → ◕ → ●（空 / ¼ / ½ / ¾ / 满）
 pub fn format_status_bar(percentage: i64, length: usize) -> String {
     let pct = percentage.clamp(0, 100);
     // 每个圆代表 5%，计算当前落在第几个圆（active 位置）
@@ -55,6 +55,8 @@ pub fn format_status_bar(percentage: i64, length: usize) -> String {
     } else {
         (pct as usize) / 5
     };
+    // 当前 5% 段内的余量 (0-4)
+    let sub_pct = pct % 5;
     let color = if percentage >= 85 {
         "\x1b[31m"
     } else if percentage >= 70 {
@@ -68,8 +70,16 @@ pub fn format_status_bar(percentage: i64, length: usize) -> String {
         if i < active_index {
             // 已完成的圆：彩色实心
             bar.push_str(&format!("{}●", color));
+        } else if i == active_index && sub_pct > 0 {
+            // 当前段部分填充：根据 sub_pct 选择 ¼ / ½ / ¾
+            let ch = match sub_pct {
+                1 => "◔",  // 1/5 ≈ 25%
+                2 => "◑",  // 2/5 = 50%
+                _ => "◕",  // 3-4/5 = 75%+
+            };
+            bar.push_str(&format!("{}{}", color, ch));
         } else if i == active_index {
-            // 当前位置：彩色空心
+            // 当前段无填充：彩色空心
             bar.push_str(&format!("{}○", color));
         } else {
             // 未到达：默认色空心
