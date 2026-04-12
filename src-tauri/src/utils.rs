@@ -46,8 +46,8 @@ pub fn format_amount(v: f64) -> String {
 
 /// ANSI 彩色进度条（与 zhipukit-claude-code-plugin.exe 保持一致）
 /// 每个圆代表 10%，0-100% 映射到整个条，颜色按 70%/85% 变化
-/// 填充级别：○ → ◔ → ◕ → ●（空 / ¼ / ¾ / 满）
-/// 阈值：<2.5% → ○，≥2.5% → ◔，≥7.5% → ◕，10%（段满）→ ●
+/// 填充级别：○ → ◔ → ◑ → ◕ → ●（空 / ¼ / ½ / ¾ / 满）
+/// 阈值：<2.5%→○，≥2.5%→◔，≥5%→◑，≥7.5%→◕，10%（段满）→●
 pub fn format_status_bar(percentage: f64, length: usize) -> String {
     let pct = percentage.clamp(0.0, 100.0);
     // 每个圆代表 10%，计算当前落在第几个圆（active 位置）
@@ -72,8 +72,14 @@ pub fn format_status_bar(percentage: f64, length: usize) -> String {
             // 已完成的圆：彩色实心
             bar.push_str(&format!("{}●", color));
         } else if i == active_index && sub_pct >= 2.5 {
-            // 当前段部分填充：2.5-7.5 → ◔ (¼)，≥7.5 → ◕ (¾)
-            let ch = if sub_pct < 7.5 { "◔" } else { "◕" };
+            // 当前段部分填充：按 sub_pct 选择 ¼ / ½ / ¾
+            let ch = if sub_pct < 5.0 {
+                "◔"
+            } else if sub_pct < 7.5 {
+                "◑"
+            } else {
+                "◕"
+            };
             bar.push_str(&format!("{}{}", color, ch));
         } else if i == active_index {
             // 当前段 < 2.5%：彩色空心
@@ -167,17 +173,31 @@ mod tests {
     }
 
     #[test]
-    fn test_five_percent_quarter() {
-        // 5% → sub_pct=5.0, <7.5 → ◔
-        let bar = strip_ansi_bar(&format_status_bar(5.0, 10));
+    fn test_4_9_percent_quarter() {
+        // 4.9% < 5.0 → ◔
+        let bar = strip_ansi_bar(&format_status_bar(4.9, 10));
         assert_eq!(bar, "◔○○○○○○○○○");
     }
 
     #[test]
-    fn test_7_4_percent_quarter() {
-        // 7.4% < 7.5 → ◔
+    fn test_five_percent_half() {
+        // 5% → sub_pct=5.0, ≥5.0 <7.5 → ◑
+        let bar = strip_ansi_bar(&format_status_bar(5.0, 10));
+        assert_eq!(bar, "◑○○○○○○○○○");
+    }
+
+    #[test]
+    fn test_seven_percent_half() {
+        // 7% → sub_pct=7.0, ≥5.0 <7.5 → ◑
+        let bar = strip_ansi_bar(&format_status_bar(7.0, 10));
+        assert_eq!(bar, "◑○○○○○○○○○");
+    }
+
+    #[test]
+    fn test_7_4_percent_half() {
+        // 7.4% < 7.5 → ◑
         let bar = strip_ansi_bar(&format_status_bar(7.4, 10));
-        assert_eq!(bar, "◔○○○○○○○○○");
+        assert_eq!(bar, "◑○○○○○○○○○");
     }
 
     #[test]
