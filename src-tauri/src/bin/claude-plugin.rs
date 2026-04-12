@@ -19,7 +19,7 @@ const DEFAULT_ENDPOINT: &str = "https://open.bigmodel.cn";
 const BAR_WIDTH: usize = 10;
 
 /// 带 ANSI 颜色进度条 + 百分比
-fn progress_bar_pct(percentage: i64) -> String {
+fn progress_bar_pct(percentage: f64) -> String {
     let bar = format_status_bar(percentage, BAR_WIDTH);
     format!("{} {}%", bar, percentage)
 }
@@ -453,7 +453,7 @@ fn format_model(model: &str) -> String {
 }
 
 fn format_hour5(pct: i64, next_reset: Option<i64>, now_ms: i64) -> String {
-    let mut s = format!("5h {}", progress_bar_pct(pct));
+    let mut s = format!("5h {}", progress_bar_pct(pct as f64));
     if let Some(reset) = next_reset {
         let remaining_ms = (reset - now_ms).max(0);
         let elapsed_ms = (5 * 3600 * 1000 - remaining_ms).max(0);
@@ -463,7 +463,7 @@ fn format_hour5(pct: i64, next_reset: Option<i64>, now_ms: i64) -> String {
 }
 
 fn format_mcp(used: i64, total: i64, next_reset: Option<i64>, now_ms: i64) -> String {
-    let pct = (used * 100 / total).min(100);
+    let pct = (used as f64 * 100.0 / total as f64).min(100.0);
     let mut s = format!("MCP {}", format_status_bar(pct, BAR_WIDTH));
     let mut time_info = format!("{}/{}", used, total);
     if let Some(reset) = next_reset {
@@ -479,7 +479,7 @@ fn format_mcp(used: i64, total: i64, next_reset: Option<i64>, now_ms: i64) -> St
 
 fn format_context_usage(ctx: &ClaudeContext) -> String {
     let pct = ctx.buffered_percent();
-    let bar = format_status_bar(pct, BAR_WIDTH);
+    let bar = format_status_bar(pct as f64, BAR_WIDTH);
     let mut result = if ctx.current_tokens > 0 && ctx.context_window_size > 0 {
         let size_k = ctx.context_window_size / 1000;
         format!(
