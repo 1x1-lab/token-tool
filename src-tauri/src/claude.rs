@@ -539,3 +539,93 @@ pub async fn save_zhipu_cache_duration(seconds: u64) -> Result<(), String> {
         .map_err(|e| format!("写入配置失败: {}", e))?;
     Ok(())
 }
+
+/// 段展示配置
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+pub struct SegmentConfig {
+    pub tier: bool,
+    pub balance: bool,
+    pub git: bool,
+    pub model: bool,
+    pub context: bool,
+    pub hour5: bool,
+    pub mcp: bool,
+}
+
+impl Default for SegmentConfig {
+    fn default() -> Self {
+        Self {
+            tier: true,
+            balance: true,
+            git: true,
+            model: true,
+            context: true,
+            hour5: true,
+            mcp: true,
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn read_segment_config() -> Result<SegmentConfig, String> {
+    let home = get_home_dir()?;
+    let config_path = home.join(".claude").join("settings.json");
+
+    if !config_path.exists() {
+        return Ok(SegmentConfig::default());
+    }
+
+    let content = tokio::fs::read_to_string(&config_path)
+        .await
+        .map_err(|e| format!("读取配置失败: {}", e))?;
+    let raw: serde_json::Value =
+        serde_json::from_str(&content).map_err(|e| format!("解析 JSON 失败: {}", e))?;
+
+    let seg = match raw.get("zhipuSegments").and_then(|v| v.as_object()) {
+        Some(o) => o,
+        None => return Ok(SegmentConfig::default()),
+    };
+
+    let def = SegmentConfig::default();
+    Ok(SegmentConfig {
+        tier: seg.get("tier").and_then(|v| v.as_bool()).unwrap_or(def.tier),
+        balance: seg.get("balance").and_then(|v| v.as_bool()).unwrap_or(def.balance),
+        git: seg.get("git").and_then(|v| v.as_bool()).unwrap_or(def.git),
+        model: seg.get("model").and_then(|v| v.as_bool()).unwrap_or(def.model),
+        context: seg.get("context").and_then(|v| v.as_bool()).unwrap_or(def.context),
+        hour5: seg.get("hour5").and_then(|v| v.as_bool()).unwrap_or(def.hour5),
+        mcp: seg.get("mcp").and_then(|v| v.as_bool()).unwrap_or(def.mcp),
+    })
+}
+
+#[tauri::command]
+pub async fn save_segment_config(config: SegmentConfig) -> Result<(), String> {
+    let home = get_home_dir()?;
+    let config_path = home.join(".claude").join("settings.json");
+
+    let mut raw: serde_json::Value = if config_path.exists() {
+        let content = tokio::fs::read_to_string(&config_path)
+            .await
+            .map_err(|e| format!("读取配置失败: {}", e))?;
+        serde_json::from_str(&content).unwrap_or(serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    raw["zhipuSegments"] = serde_json::json!({
+        "tier": config.tier,
+        "balance": config.balance,
+        "git": config.git,
+        "model": config.model,
+        "context": config.context,
+        "hour5": config.hour5,
+        "mcp": config.mcp,
+    });
+
+    let output =
+        serde_json::to_string_pretty(&raw).map_err(|e| format!("序列化失败: {}", e))?;
+    tokio::fs::write(&config_path, output)
+        .await
+        .map_err(|e| format!("写入配置失败: {}", e))?;
+    Ok(())
+}

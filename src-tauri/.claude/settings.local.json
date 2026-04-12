@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find . .. -type f \\\\\\( -name \"*.vue\" -o -name \"*.ts\" -o -name \"*.js\" -o -name \"*.rs\" \\\\\\) -exec grep -l -i \"column\\\\|visibility\\\\|toggle\" {} \\\\;)",
+      "Bash(find:*)"
+    ]
+  }
+}

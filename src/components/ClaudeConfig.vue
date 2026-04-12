@@ -51,6 +51,34 @@ const timeoutMs = ref('')
 const brokenPlugins = ref<string[]>([])
 const fixingPlugins = ref(false)
 
+// 段展示配置
+interface SegmentConfig {
+  tier: boolean
+  balance: boolean
+  git: boolean
+  model: boolean
+  context: boolean
+  hour5: boolean
+  mcp: boolean
+}
+
+const defaultSegmentConfig: SegmentConfig = {
+  tier: true, balance: true, git: true, model: true,
+  context: true, hour5: true, mcp: true,
+}
+
+const segmentConfig = ref<SegmentConfig>({ ...defaultSegmentConfig })
+const segmentLabels: Record<keyof SegmentConfig, string> = {
+  tier: '套餐等级',
+  balance: '余额',
+  git: 'Git 分支',
+  model: '模型',
+  context: '上下文用量',
+  hour5: '5h 配额',
+  mcp: 'MCP 用量',
+}
+const segmentSaved = ref(false)
+
 async function detect() {
   try {
     status.value = await invoke<ClaudeCodeStatus>('detect_claude_code')
@@ -113,6 +141,9 @@ async function refresh() {
   if (status.value?.installed) {
     await loadConfig()
     await checkHookStatus()
+    if (hookEnabled.value) {
+      await loadSegmentConfig()
+    }
   }
   loading.value = false
 }
@@ -188,6 +219,25 @@ async function saveCacheDuration() {
     appliedCacheDuration.value = cacheDuration.value
     cacheSaved.value = true
     setTimeout(() => { cacheSaved.value = false }, 2000)
+  } catch (e) {
+    error.value = String(e)
+  }
+}
+
+async function loadSegmentConfig() {
+  try {
+    const cfg = await invoke<SegmentConfig>('read_segment_config')
+    segmentConfig.value = { ...defaultSegmentConfig, ...cfg }
+  } catch {
+    segmentConfig.value = { ...defaultSegmentConfig }
+  }
+}
+
+async function saveSegmentConfigAction() {
+  try {
+    await invoke('save_segment_config', { config: segmentConfig.value })
+    segmentSaved.value = true
+    setTimeout(() => { segmentSaved.value = false }, 2000)
   } catch (e) {
     error.value = String(e)
   }
@@ -327,6 +377,20 @@ onMounted(() => refresh())
           </svg>
           测试
         </button>
+        <div class="segment-config">
+          <div class="segment-header">
+            <span class="segment-label">展示内容</span>
+            <button class="cache-save-btn" @click="saveSegmentConfigAction">
+              {{ segmentSaved ? '已保存' : '保存' }}
+            </button>
+          </div>
+          <div class="segment-toggles">
+            <label v-for="(_, key) in defaultSegmentConfig" :key="key" class="segment-toggle">
+              <input type="checkbox" v-model="segmentConfig[key as keyof SegmentConfig]" />
+              <span class="segment-name">{{ segmentLabels[key as keyof SegmentConfig] }}</span>
+            </label>
+          </div>
+        </div>
         <div v-if="hookTestResult" :class="['debug-output', { ok: !hookTestResult.startsWith('错误'), fail: hookTestResult.startsWith('错误') }]">
           <pre>{{ hookTestResult }}</pre>
         </div>
@@ -978,5 +1042,49 @@ onMounted(() => refresh())
 .test-btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+.segment-config {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.segment-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.segment-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.segment-toggles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+}
+
+.segment-toggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.segment-toggle input[type="checkbox"] {
+  accent-color: var(--accent);
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+}
+
+.segment-name {
+  font-size: 12px;
+  color: var(--text);
 }
 </style>

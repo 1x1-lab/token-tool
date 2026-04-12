@@ -140,7 +140,9 @@ pub fn run() {
             claude::check_claude_hook_status,
             claude::test_zhipukit_status,
             claude::save_zhipu_endpoint,
-            claude::save_zhipu_cache_duration
+            claude::save_zhipu_cache_duration,
+            claude::read_segment_config,
+            claude::save_segment_config
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

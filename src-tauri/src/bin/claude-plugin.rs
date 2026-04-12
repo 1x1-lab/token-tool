@@ -348,6 +348,7 @@ async fn main() {
     // ── Phase 1: 数据收集 ──
     let (api_key, endpoint, settings_model) = read_config_keys();
     let stdin_data = parse_stdin_data();
+    let seg_cfg = read_segment_config();
     let cwd = stdin_data.as_ref().and_then(|d| d.cwd.clone());
     let stdin_model = stdin_data.as_ref().and_then(|d| d.model.clone());
     // 优先使用 settings.json 中用户配置的模型名，而非 stdin 传入的 Claude 内部模型名
@@ -392,6 +393,7 @@ async fn main() {
                                 .duration_since(std::time::UNIX_EPOCH)
                                 .unwrap_or_default()
                                 .as_millis() as i64,
+                            &seg_cfg,
                         );
                         let output = render_segments(&segments);
                         if !output.is_empty() {
@@ -424,7 +426,7 @@ async fn main() {
         .as_millis() as i64;
 
     let ctx = stdin_data.as_ref().map(|d| &d.context);
-    let segments = build_segments(&quota, ctx, effective_model, git_branch.as_deref(), now_ms);
+    let segments = build_segments(&quota, ctx, effective_model, git_branch.as_deref(), now_ms, &seg_cfg);
 
     let output = render_segments(&segments);
     if !output.is_empty() {
@@ -506,19 +508,26 @@ fn build_segments(
     model: Option<&str>,
     git_branch: Option<&str>,
     now_ms: i64,
+    seg_cfg: &SegmentConfig,
 ) -> Vec<Vec<String>> {
     let mut rows: Vec<Vec<String>> = Vec::new();
 
     // Row 0: 状态行 (tier, balance, git)
     let mut row0: Vec<String> = Vec::new();
-    if let Some(level) = &quota.level {
-        row0.push(format_tier(level));
+    if seg_cfg.tier {
+        if let Some(level) = &quota.level {
+            row0.push(format_tier(level));
+        }
     }
-    if let Some(balance) = quota.balance {
-        row0.push(format_balance(balance));
+    if seg_cfg.balance {
+        if let Some(balance) = quota.balance {
+            row0.push(format_balance(balance));
+        }
     }
-    if let Some(branch) = git_branch {
-        row0.push(format_git(branch));
+    if seg_cfg.git {
+        if let Some(branch) = git_branch {
+            row0.push(format_git(branch));
+        }
     }
     if !row0.is_empty() {
         rows.push(row0);
@@ -526,11 +535,15 @@ fn build_segments(
 
     // Row 1: 模型 + 上下文（单独一行）
     let mut row1: Vec<String> = Vec::new();
-    if let Some(m) = model {
-        row1.push(format_model(m));
+    if seg_cfg.model {
+        if let Some(m) = model {
+            row1.push(format_model(m));
+        }
     }
-    if let Some(context) = ctx {
-        row1.push(format_context_usage(context));
+    if seg_cfg.context {
+        if let Some(context) = ctx {
+            row1.push(format_context_usage(context));
+        }
     }
     if !row1.is_empty() {
         rows.push(row1);
@@ -538,12 +551,16 @@ fn build_segments(
 
     // Row 2: 配额行 (hour5, mcp)
     let mut row2: Vec<String> = Vec::new();
-    if let Some(pct) = quota.hour5_pct {
-        row2.push(format_hour5(pct, quota.hour5_next_reset, now_ms));
+    if seg_cfg.hour5 {
+        if let Some(pct) = quota.hour5_pct {
+            row2.push(format_hour5(pct, quota.hour5_next_reset, now_ms));
+        }
     }
-    if let (Some(used), Some(total)) = (quota.mcp_used, quota.mcp_total) {
-        if total > 0 {
-            row2.push(format_mcp(used, total, quota.mcp_next_reset, now_ms));
+    if seg_cfg.mcp {
+        if let (Some(used), Some(total)) = (quota.mcp_used, quota.mcp_total) {
+            if total > 0 {
+                row2.push(format_mcp(used, total, quota.mcp_next_reset, now_ms));
+            }
         }
     }
     if !row2.is_empty() {
@@ -562,6 +579,66 @@ fn render_segments(rows: &[Vec<String>]) -> String {
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// 段展示配置：控制状态栏中各信息段的显隐
+#[derive(Debug)]
+struct SegmentConfig {
+    tier: bool,
+    balance: bool,
+    git: bool,
+    model: bool,
+    context: bool,
+    hour5: bool,
+    mcp: bool,
+}
+
+impl Default for SegmentConfig {
+    fn default() -> Self {
+        Self {
+            tier: true,
+            balance: true,
+            git: true,
+            model: true,
+            context: true,
+            hour5: true,
+            mcp: true,
+        }
+    }
+}
+
+/// 从 settings.json 读取 zhipuSegments 配置
+fn read_segment_config() -> SegmentConfig {
+    let home = match get_home_dir() {
+        Ok(h) => h,
+        Err(_) => return SegmentConfig::default(),
+    };
+    let config_path = home.join(".claude").join("settings.json");
+    if !config_path.exists() {
+        return SegmentConfig::default();
+    }
+    let content = match std::fs::read_to_string(&config_path) {
+        Ok(c) => c,
+        Err(_) => return SegmentConfig::default(),
+    };
+    let config: serde_json::Value = match serde_json::from_str(&content) {
+        Ok(v) => v,
+        Err(_) => return SegmentConfig::default(),
+    };
+    let seg = match config.get("zhipuSegments").and_then(|v| v.as_object()) {
+        Some(o) => o,
+        None => return SegmentConfig::default(),
+    };
+    let def = SegmentConfig::default();
+    SegmentConfig {
+        tier: seg.get("tier").and_then(|v| v.as_bool()).unwrap_or(def.tier),
+        balance: seg.get("balance").and_then(|v| v.as_bool()).unwrap_or(def.balance),
+        git: seg.get("git").and_then(|v| v.as_bool()).unwrap_or(def.git),
+        model: seg.get("model").and_then(|v| v.as_bool()).unwrap_or(def.model),
+        context: seg.get("context").and_then(|v| v.as_bool()).unwrap_or(def.context),
+        hour5: seg.get("hour5").and_then(|v| v.as_bool()).unwrap_or(def.hour5),
+        mcp: seg.get("mcp").and_then(|v| v.as_bool()).unwrap_or(def.mcp),
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Default, Debug)]
