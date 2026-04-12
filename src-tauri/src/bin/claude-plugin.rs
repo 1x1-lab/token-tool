@@ -6,14 +6,44 @@ use app_lib::utils::{
     balance_base_url, build_url, format_amount, format_remaining, format_status_bar,
     API_PATH_BALANCE, API_PATH_CODING_PLAN,
 };
+use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::io::{self, IsTerminal, Read};
 use std::path::PathBuf;
-use terminal_size::{terminal_size, Width};
 
 /// 默认 endpoint（国内版）
 const DEFAULT_ENDPOINT: &str = "https://open.bigmodel.cn";
+
+/// 固定进度条宽度
+const BAR_WIDTH: usize = 10;
+
+/// 带 ANSI 颜色进度条 + 百分比
+fn progress_bar_pct(percentage: i64) -> String {
+    let bar = format_status_bar(percentage, BAR_WIDTH);
+    format!("{} {}%", bar, percentage)
+}
+/// 去除 ANSI 转义序列（如 \x1b[1m）
+fn strip_ansi(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            if chars.peek() == Some(&'[') {
+                chars.next();
+                while let Some(&next) = chars.peek() {
+                    chars.next();
+                    if next.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            }
+        } else {
+            result.push(c);
+        }
+    }
+    result
+}
 
 fn get_home_dir() -> Result<PathBuf, String> {
     if cfg!(windows) {
@@ -25,41 +55,6 @@ fn get_home_dir() -> Result<PathBuf, String> {
             .map(PathBuf::from)
             .map_err(|_| "Cannot determine home directory".to_string())
     }
-}
-
-/// 带 ANSI 颜色进度条 + 百分比
-fn progress_bar_pct(percentage: i64, length: usize) -> String {
-    let bar = format_status_bar(percentage, length);
-    format!("{} {}%", bar, percentage)
-}
-
-/// 格式化上下文窗口使用进度
-fn format_context_usage(ctx: &ClaudeContext) -> String {
-    let pct = ctx.buffered_percent();
-    let bar = format_status_bar(pct, 8);
-
-    // 基础显示
-    let mut result = if ctx.current_tokens > 0 && ctx.context_window_size > 0 {
-        let size_k = ctx.context_window_size / 1000;
-        format!(
-            "{} {}% ({:.1}k/{}k)",
-            bar,
-            pct,
-            ctx.current_tokens as f64 / 1000.0,
-            size_k
-        )
-    } else {
-        format!("{} {}%", bar, pct)
-    };
-
-    // 高用量 (≥85%) 时追加 input/cache token 明细
-    if pct >= 85 && (ctx.input_tokens > 0 || ctx.cache_tokens > 0) {
-        let in_k = ctx.input_tokens as f64 / 1000.0;
-        let cache_k = ctx.cache_tokens as f64 / 1000.0;
-        result.push_str(&format!(" (in: {:.1}k, cache: {:.1}k)", in_k, cache_k));
-    }
-
-    result
 }
 
 /// Autocompact 缓冲比例（经验值，匹配 Claude Code /context 输出）
@@ -172,7 +167,7 @@ fn parse_stdin_data() -> Option<StdinData> {
         .get("model")
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
-        .map(String::from);
+        .map(|s| strip_ansi(s));
 
     Some(StdinData { context, cwd, model })
 }
@@ -274,8 +269,8 @@ fn read_cache_duration() -> i64 {
         .unwrap_or(300)
 }
 
-/// 尝试读取缓存（有效期内且 key_hash 匹配），返回缓存的输出文本
-fn read_cache(api_key: &str, endpoint: &str) -> Option<String> {
+/// 尝试读取缓存（有效期内且 key_hash 匹配），返回结构化配额数据
+fn read_cache(api_key: &str, endpoint: &str) -> Option<QuotaData> {
     let path = cache_path().ok()?;
     if !path.exists() {
         return None;
@@ -303,234 +298,273 @@ fn read_cache(api_key: &str, endpoint: &str) -> Option<String> {
         return None;
     }
 
-    json.get("output")
-        .and_then(|v| v.as_str())
-        .map(String::from)
+    // 从 JSON 反序列化为 QuotaData（serde 忽略 cached_at/key_hash 等多余字段）
+    serde_json::from_value::<QuotaData>(json).ok()
 }
 
-/// 写入缓存
-fn write_cache(output: &str, api_key: &str, endpoint: &str) {
+/// 读取过期缓存（fetch 失败时的降级）
+fn read_cache_expired(api_key: &str, endpoint: &str) -> Option<QuotaData> {
+    let path = cache_path().ok()?;
+    if !path.exists() {
+        return None;
+    }
+    let content = std::fs::read_to_string(&path).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&content).ok()?;
+    let expected_hash = config_hash(api_key, endpoint);
+    let cached_hash = json.get("key_hash").and_then(|v| v.as_str()).unwrap_or("");
+    if cached_hash != expected_hash {
+        return None;
+    }
+    serde_json::from_value::<QuotaData>(json).ok()
+}
+
+/// 写入缓存（结构化 QuotaData）
+fn write_cache(data: &QuotaData, api_key: &str, endpoint: &str) {
     if let Ok(path) = cache_path() {
-        let json = serde_json::json!({
-            "cached_at": std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as i64,
-            "key_hash": config_hash(api_key, endpoint),
-            "output": output
-        });
-        let _ = std::fs::write(&path, json.to_string());
-    }
-}
-
-/// 获取终端宽度，默认 80
-fn term_width() -> usize {
-    terminal_size()
-        .map(|(Width(w), _)| w as usize)
-        .unwrap_or(80)
-}
-
-/// 将模型名添加到输出第一行前面
-fn prepend_model(output: &str, model: Option<&str>) -> String {
-    let Some(m) = model else {
-        return output.to_string();
-    };
-    let short = short_model_name(m);
-    let lines: Vec<&str> = output.lines().collect();
-    if let Some(first) = lines.first() {
-        let rest = if lines.len() > 1 {
-            format!("\n{}", lines[1..].join("\n"))
-        } else {
-            String::new()
-        };
-        format!("[{}] {}{}", short, first, rest)
-    } else {
-        format!("[{}]", short)
-    }
-}
-
-/// 将所有行按 " | " 分割成段，根据终端宽度自动换行重排
-fn wrap_lines(lines: &[&str]) -> String {
-    let width = term_width();
-    let mut all_segments: Vec<String> = Vec::new();
-    for line in lines {
-        for seg in line.split(" | ") {
-            if !seg.is_empty() {
-                all_segments.push(seg.to_string());
-            }
+        let mut cache_json = serde_json::to_value(data).unwrap_or(serde_json::json!({}));
+        if let Some(obj) = cache_json.as_object_mut() {
+            obj.insert(
+                "cached_at".to_string(),
+                serde_json::Value::Number(
+                    (std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as i64)
+                        .into(),
+                ),
+            );
+            obj.insert(
+                "key_hash".to_string(),
+                serde_json::Value::String(config_hash(api_key, endpoint)),
+            );
         }
+        let _ = std::fs::write(&path, cache_json.to_string());
     }
-
-    let mut output_lines: Vec<String> = Vec::new();
-    let mut current = String::new();
-
-    for seg in &all_segments {
-        if current.is_empty() {
-            current = seg.clone();
-        } else if current.len() + 3 + seg.len() <= width {
-            current = format!("{} | {}", current, seg);
-        } else {
-            output_lines.push(current);
-            current = seg.clone();
-        }
-    }
-    if !current.is_empty() {
-        output_lines.push(current);
-    }
-
-    output_lines.join("\n")
 }
 
-/// 将 git 分支信息追加到 line1
-fn append_git_branch(line1: &str, cwd: Option<&str>) -> String {
-    if let Some(dir) = cwd {
-        if let Some(branch) = get_git_branch(dir) {
-            return format!("{} | Git ({})", line1, branch);
-        }
-    }
-    line1.to_string()
-}
 
 #[tokio::main]
 async fn main() {
-    // 提前读取配置，获取 api_key、endpoint 和 model（用于缓存校验和模型展示）
+    // ── Phase 1: 数据收集 ──
     let (api_key, endpoint, settings_model) = read_config_keys();
-
-    // 解析 stdin 数据（上下文 + 项目路径 + 模型，实时数据不缓存）
     let stdin_data = parse_stdin_data();
     let cwd = stdin_data.as_ref().and_then(|d| d.cwd.clone());
     let stdin_model = stdin_data.as_ref().and_then(|d| d.model.clone());
+    // 优先使用 settings.json 中用户配置的模型名，而非 stdin 传入的 Claude 内部模型名
+    let effective_model = settings_model.as_deref().or(stdin_model.as_deref());
+    let git_branch = cwd.as_deref().and_then(|dir| get_git_branch(dir));
 
-    // 有效模型：优先用 stdin（Claude Code 实际使用的模型），否则用 settings.json 配置
-    let effective_model = stdin_model.as_deref().or(settings_model.as_deref());
-
-    // statusline 模式：优先使用缓存获取 API 部分
-    if !io::stdin().is_terminal() {
+    // ── Phase 2: 获取配额数据 ──
+    let is_statusline = !io::stdin().is_terminal();
+    let quota: QuotaData = if is_statusline {
+        // statusline 模式：优先使用缓存
         if let (Some(ref ak), Some(ref ep)) = (&api_key, &endpoint) {
             if let Some(cached) = read_cache(ak, ep) {
+                cached
+            } else if let Ok(data) = fetch_quota_data().await {
+                write_cache(&data, ak, ep);
+                data
+            } else if let Some(cached) = read_cache_expired(ak, ep) {
+                cached
+            } else {
+                QuotaData::default()
+            }
+        } else {
+            QuotaData::default()
+        }
+    } else {
+        // 测试模式：总是请求 API
+        match fetch_quota_data().await {
+            Ok(data) => {
+                if let (Some(ref ak), Some(ref ep)) = (&api_key, &endpoint) {
+                    write_cache(&data, ak, ep);
+                }
+                data
+            }
+            Err(e) => {
+                // fetch 失败：尝试过期缓存 → 仅显示上下文 → 报错
+                if let (Some(ref ak), Some(ref ep)) = (&api_key, &endpoint) {
+                    if let Some(cached) = read_cache_expired(ak, ep) {
+                        let ctx = stdin_data.as_ref().map(|d| &d.context);
+                        let segments = build_segments(
+                            &cached, ctx, effective_model, git_branch.as_deref(),
+                            std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_millis() as i64,
+                        );
+                        let output = render_segments(&segments);
+                        if !output.is_empty() {
+                            println!("{}", output);
+                        }
+                        return;
+                    }
+                }
                 if let Some(ref data) = stdin_data {
-                    let (line1, combined) = merge_context(&data.context, effective_model, &cached);
-                    let line1 = append_git_branch(&line1, cwd.as_deref());
-                    println!("{}", wrap_lines(&[&line1, &combined]));
+                    let mut parts: Vec<String> = Vec::new();
+                    if let Some(ref m) = effective_model {
+                        parts.push(format_model(m));
+                    }
+                    parts.push(format_context_usage(&data.context));
+                    println!("{}", parts.join(" "));
+                } else if let Some(ref m) = effective_model {
+                    eprintln!("[{}] {}", m, e);
                 } else {
-                    let output = prepend_model(&cached, effective_model);
-                    println!("{}", wrap_lines(&[&output]));
+                    eprintln!("[ZhipuKit] {}", e);
                 }
                 return;
             }
         }
-    }
+    };
 
-    let result = fetch_and_format().await;
-    match result {
-        Ok(output) => {
-            if let (Some(ref ak), Some(ref ep)) = (&api_key, &endpoint) {
-                write_cache(&output, ak, ep);
-            }
-            if let Some(ref data) = stdin_data {
-                let (line1, combined) = merge_context(&data.context, effective_model, &output);
-                let line1 = append_git_branch(&line1, cwd.as_deref());
-                println!("{}", wrap_lines(&[&line1, &combined]));
-            } else {
-                let output = prepend_model(&output, effective_model);
-                println!("{}", wrap_lines(&[&output]));
-            }
-        }
-        Err(e) => {
-            // 出错时也尝试用过期缓存
-            if let (Some(ref ak), Some(ref ep)) = (&api_key, &endpoint) {
-                if let Some(cached) = read_cache(ak, ep) {
-                    if let Some(ref data) = stdin_data {
-                        let (line1, combined) = merge_context(&data.context, effective_model, &cached);
-                        let line1 = append_git_branch(&line1, cwd.as_deref());
-                        println!("{}", wrap_lines(&[&line1, &combined]));
-                    } else {
-                        let output = prepend_model(&cached, effective_model);
-                        println!("{}", wrap_lines(&[&output]));
-                    }
-                    return;
-                }
-            }
-            if let Some(ref data) = stdin_data {
-                let mut parts: Vec<String> = Vec::new();
-                if let Some(ref m) = effective_model {
-                    parts.push(format!("[{}]", short_model_name(m)));
-                }
-                parts.push(format_context_usage(&data.context));
-                println!("{}", parts.join(" "));
-            } else if let Some(ref m) = effective_model {
-                eprintln!("[{}] {}", short_model_name(m), e);
-            } else {
-                eprintln!("[ZhipuKit] {}", e);
-            }
-        }
+    // ── Phase 3: 渲染 ──
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64;
+
+    let ctx = stdin_data.as_ref().map(|d| &d.context);
+    let segments = build_segments(&quota, ctx, effective_model, git_branch.as_deref(), now_ms);
+
+    let output = render_segments(&segments);
+    if !output.is_empty() {
+        println!("{}", output);
     }
 }
 
-/// 简化模型名：去掉日期后缀，缩短常见前缀
-fn short_model_name(model: &str) -> String {
-    // claude-sonnet-4-20250514 -> Sonnet 4
-    // claude-opus-4-6-20250514 -> Opus 4.6
-    // claude-haiku-4-5-20251001 -> Haiku 4.5
-    let s = model.to_lowercase();
-    let name = if s.starts_with("claude-") {
-        &s[7..]
-    } else {
-        return model.to_string();
-    };
-    // 去掉日期后缀 (-20250514)
-    let without_date = name.split('-').next_back().map(|last| {
-        if last.len() == 8 && last.parse::<u32>().is_ok() {
-            // 最后一段是日期，去掉
-            name.trim_end_matches(&format!("-{}", last))
-        } else {
-            name
-        }
-    }).unwrap_or(name);
+// ── 段格式化函数（每个函数只格式化一个段） ──
 
-    // 提取 tier 和版本
-    let parts: Vec<&str> = without_date.split('-').collect();
-    let tier = parts.first().unwrap_or(&"");
-    let version = if parts.len() >= 2 { parts[1..].join(".") } else { String::new() };
-
-    // 首字母大写
-    let tier_cap = match *tier {
-        "sonnet" => "Sonnet",
-        "opus" => "Opus",
-        "haiku" => "Haiku",
-        other => other,
-    };
-
-    if version.is_empty() {
-        tier_cap.to_string()
-    } else {
-        format!("{} {}", tier_cap, version)
-    }
+fn format_tier(level: &str) -> String {
+    format!("ZhipuKit {}", level.to_uppercase())
 }
 
-/// 合并上下文进度与 API 输出
-/// 返回 (第一行, 第二行合并后的 quota 行)
-fn merge_context(ctx: &ClaudeContext, model: Option<&str>, api_output: &str) -> (String, String) {
-    let ctx_str = format_context_usage(ctx);
-    let lines: Vec<&str> = api_output.lines().collect();
-    let line1 = lines.first().unwrap_or(&"").to_string();
+fn format_balance(balance: f64) -> String {
+    format!("¥{}", format_amount(balance))
+}
 
-    // 构建前缀：[模型名] + 上下文进度
-    let mut prefix_parts: Vec<String> = Vec::new();
+fn format_git(branch: &str) -> String {
+    format!("Git ({})", branch)
+}
+
+fn format_model(model: &str) -> String {
+    format!("Model ({})", model)
+}
+
+fn format_hour5(pct: i64, next_reset: Option<i64>, now_ms: i64) -> String {
+    let mut s = format!("5h {}", progress_bar_pct(pct));
+    if let Some(reset) = next_reset {
+        let remaining_ms = (reset - now_ms).max(0);
+        let elapsed_ms = (5 * 3600 * 1000 - remaining_ms).max(0);
+        s.push_str(&format!(" ({}/5h)", format_remaining(elapsed_ms)));
+    }
+    s
+}
+
+fn format_mcp(used: i64, total: i64, next_reset: Option<i64>, now_ms: i64) -> String {
+    let pct = (used * 100 / total).min(100);
+    let mut s = format!("MCP {}", format_status_bar(pct, BAR_WIDTH));
+    let mut time_info = format!("{}/{}", used, total);
+    if let Some(reset) = next_reset {
+        let remaining_ms = (reset - now_ms).max(0);
+        let elapsed_ms = (30 * 24 * 3600 * 1000 - remaining_ms).max(0);
+        let d = elapsed_ms / (24 * 3600 * 1000);
+        let h = (elapsed_ms % (24 * 3600 * 1000)) / (3600 * 1000);
+        time_info.push_str(&format!(", {}d {}h/30d", d, h));
+    }
+    s.push_str(&format!(" ({})", time_info));
+    s
+}
+
+fn format_context_usage(ctx: &ClaudeContext) -> String {
+    let pct = ctx.buffered_percent();
+    let bar = format_status_bar(pct, BAR_WIDTH);
+    let mut result = if ctx.current_tokens > 0 && ctx.context_window_size > 0 {
+        let size_k = ctx.context_window_size / 1000;
+        format!(
+            "Context {} {}% ({:.1}k/{}k)",
+            bar,
+            pct,
+            ctx.current_tokens as f64 / 1000.0,
+            size_k
+        )
+    } else {
+        format!("Context {} {}%", bar, pct)
+    };
+    if pct >= 85 && (ctx.input_tokens > 0 || ctx.cache_tokens > 0) {
+        let in_k = ctx.input_tokens as f64 / 1000.0;
+        let cache_k = ctx.cache_tokens as f64 / 1000.0;
+        result.push_str(&format!(" (in: {:.1}k, cache: {:.1}k)", in_k, cache_k));
+    }
+    result
+}
+
+// ── 结构化段构建 ──
+
+fn build_segments(
+    quota: &QuotaData,
+    ctx: Option<&ClaudeContext>,
+    model: Option<&str>,
+    git_branch: Option<&str>,
+    now_ms: i64,
+) -> Vec<Vec<String>> {
+    let mut rows: Vec<Vec<String>> = Vec::new();
+
+    // Row 0: 状态行 (tier, balance, git)
+    let mut row0: Vec<String> = Vec::new();
+    if let Some(level) = &quota.level {
+        row0.push(format_tier(level));
+    }
+    if let Some(balance) = quota.balance {
+        row0.push(format_balance(balance));
+    }
+    if let Some(branch) = git_branch {
+        row0.push(format_git(branch));
+    }
+    if !row0.is_empty() {
+        rows.push(row0);
+    }
+
+    // Row 1: 模型 + 上下文（单独一行）
+    let mut row1: Vec<String> = Vec::new();
     if let Some(m) = model {
-        prefix_parts.push(format!("[{}]", m));
+        row1.push(format_model(m));
     }
-    prefix_parts.push(ctx_str);
-    let prefix = prefix_parts.join(" ");
+    if let Some(context) = ctx {
+        row1.push(format_context_usage(context));
+    }
+    if !row1.is_empty() {
+        rows.push(row1);
+    }
 
-    let combined = if lines.len() >= 2 {
-        format!("{} | {}", prefix, lines[1])
-    } else {
-        prefix
-    };
-    (line1, combined)
+    // Row 2: 配额行 (hour5, mcp)
+    let mut row2: Vec<String> = Vec::new();
+    if let Some(pct) = quota.hour5_pct {
+        row2.push(format_hour5(pct, quota.hour5_next_reset, now_ms));
+    }
+    if let (Some(used), Some(total)) = (quota.mcp_used, quota.mcp_total) {
+        if total > 0 {
+            row2.push(format_mcp(used, total, quota.mcp_next_reset, now_ms));
+        }
+    }
+    if !row2.is_empty() {
+        rows.push(row2);
+    }
+
+    rows
 }
 
+// ── 渲染 ──
+
+/// 渲染二维段到输出字符串
+fn render_segments(rows: &[Vec<String>]) -> String {
+    rows.iter()
+        .map(|segments| segments.join(" | "))
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[derive(Serialize, Deserialize, Clone, Default, Debug)]
 struct QuotaData {
     balance: Option<f64>,
     level: Option<String>,
@@ -543,7 +577,7 @@ struct QuotaData {
     mcp_next_reset: Option<i64>,
 }
 
-async fn fetch_and_format() -> Result<String, String> {
+async fn fetch_quota_data() -> Result<QuotaData, String> {
     let home = get_home_dir()?;
     let config_path = home.join(".claude").join("settings.json");
 
@@ -579,17 +613,7 @@ async fn fetch_and_format() -> Result<String, String> {
         .build()
         .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
 
-    let mut data = QuotaData {
-        balance: None,
-        level: None,
-        hour5_pct: None,
-        hour5_next_reset: None,
-        weekly_pct: None,
-        weekly_next_reset: None,
-        mcp_used: None,
-        mcp_total: None,
-        mcp_next_reset: None,
-    };
+    let mut data = QuotaData::default();
 
     let balance_url = build_url(&balance_base_url(&endpoint), API_PATH_BALANCE);
     let plan_url = build_url(&endpoint, API_PATH_CODING_PLAN);
@@ -673,50 +697,5 @@ async fn fetch_and_format() -> Result<String, String> {
         }
     }
 
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64;
-
-    // 格式化输出
-    let level_str = data.level.as_deref().unwrap_or("unknown");
-    let mut line1 = format!("ZhipuKit {}", level_str.to_uppercase());
-    if let Some(balance) = data.balance {
-        line1.push_str(&format!(" | ¥{}", format_amount(balance)));
-    }
-
-    let mut quota_parts: Vec<String> = Vec::new();
-
-    if let Some(pct) = data.hour5_pct {
-        let mut s = format!("5h {}", progress_bar_pct(pct, 8));
-        if let Some(reset) = data.hour5_next_reset {
-            let remaining_ms = (reset - now).max(0);
-            let elapsed_ms = (5 * 3600 * 1000 - remaining_ms).max(0);
-            s.push_str(&format!(" ({}/5h)", format_remaining(elapsed_ms)));
-        }
-        quota_parts.push(s);
-    }
-
-    if let (Some(used), Some(total)) = (data.mcp_used, data.mcp_total) {
-        if total > 0 {
-            let pct = (used * 100 / total).min(100);
-            let mut s = format!("MCP {}", format_status_bar(pct, 8));
-            let mut time_info = format!("{}/{}", used, total);
-            if let Some(reset) = data.mcp_next_reset {
-                let remaining_ms = (reset - now).max(0);
-                let elapsed_ms = (30 * 24 * 3600 * 1000 - remaining_ms).max(0);
-                let d = elapsed_ms / (24 * 3600 * 1000);
-                let h = (elapsed_ms % (24 * 3600 * 1000)) / (3600 * 1000);
-                time_info.push_str(&format!(" | {}d {}h/30d", d, h));
-            }
-            s.push_str(&format!(" ({})", time_info));
-            quota_parts.push(s);
-        }
-    }
-
-    if quota_parts.is_empty() {
-        Ok(line1)
-    } else {
-        Ok(format!("{}\n{}", line1, quota_parts.join(" | ")))
-    }
+    Ok(data)
 }

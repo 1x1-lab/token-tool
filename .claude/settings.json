@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find d:/MyProjects/token-tool/src-tauri/target -path \"*/terminal_size*/src/lib.rs\" -exec head -50 {} \\\\;)"
+    ]
+  },
+  "enabledPlugins": {
+    "claude-hud@claude-hud": true
+  }
+}

@@ -46,9 +46,11 @@ pub fn format_amount(v: f64) -> String {
 
 /// ANSI 彩色进度条（与 zhipukit-claude-code-plugin.exe 保持一致）
 pub fn format_status_bar(percentage: i64, length: usize) -> String {
-    let pct = (percentage.clamp(0, 100) as f64) / 100.0;
-    let filled = (pct * length as f64).round() as usize;
-    let empty = length - filled;
+    let pct = percentage.clamp(0, 100);
+    // 四分之一圆字符: 空、¼、½、¾、满
+    let dots = ['○', '◔', '◑', '◕', '●'];
+    let steps = length * 4; // 总粒度 = length × 4
+    let filled_steps = ((pct as f64 / 100.0) * steps as f64).round() as usize;
     let color = if percentage >= 85 {
         "\x1b[31m"
     } else if percentage >= 70 {
@@ -57,13 +59,21 @@ pub fn format_status_bar(percentage: i64, length: usize) -> String {
         "\x1b[32m"
     };
     let reset = "\x1b[0m";
-    format!(
-        "{}{}{}{}",
-        color,
-        "█".repeat(filled),
-        reset,
-        "░".repeat(empty)
-    )
+    let mut bar = String::new();
+    let mut remaining = filled_steps;
+    for i in 0..length {
+        let step = remaining.min(4);
+        // 已满的用彩色，未满的用默认色
+        if i < filled_steps / 4 {
+            bar.push_str(&format!("{}{}", color, dots[4]));
+        } else if step > 0 {
+            bar.push_str(&format!("{}{}", color, dots[step]));
+        } else {
+            bar.push(dots[0]);
+        }
+        remaining = remaining.saturating_sub(4);
+    }
+    format!("{}{}", bar, reset)
 }
 
 /// 格式化剩余时间
