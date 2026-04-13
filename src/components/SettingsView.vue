@@ -2,6 +2,8 @@
 import { ref, watch, onMounted, onBeforeUnmount } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import SettingCard from './SettingCard.vue'
+import IntervalSelector from './IntervalSelector.vue'
 
 const apiKey = defineModel<string>('apiKey')
 const endpoint = defineModel<string>('endpoint')
@@ -197,18 +199,12 @@ watch([apiKey, endpoint], () => {
   <div class="settings">
     <h2 class="page-title">设置</h2>
 
-    <div class="setting-card">
-      <div class="card-header">
-        <div class="card-icon key-icon">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/>
-          </svg>
-        </div>
-        <div>
-          <div class="card-title">API Key</div>
-          <div class="card-desc">用于接口鉴权，将保存在本地</div>
-        </div>
-      </div>
+    <SettingCard title="API Key" description="用于接口鉴权，将保存在本地" icon-variant="accent">
+      <template #icon>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/>
+        </svg>
+      </template>
       <div class="input-group">
         <input
           :type="showKey ? 'text' : 'password'"
@@ -227,20 +223,14 @@ watch([apiKey, endpoint], () => {
         </button>
       </div>
       <div v-if="apiKey" class="key-preview">{{ maskKey(apiKey) }}</div>
-    </div>
+    </SettingCard>
 
-    <div class="setting-card">
-      <div class="card-header">
-        <div class="card-icon globe-icon">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
-          </svg>
-        </div>
-        <div>
-          <div class="card-title">API 端点</div>
-          <div class="card-desc">选择服务区域</div>
-        </div>
-      </div>
+    <SettingCard title="API 端点" description="选择服务区域" icon-variant="success">
+      <template #icon>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+        </svg>
+      </template>
       <div class="endpoint-options">
         <label
           v-for="ep in endpoints"
@@ -252,44 +242,38 @@ watch([apiKey, endpoint], () => {
           <span>{{ ep.label }}</span>
         </label>
       </div>
-    </div>
+    </SettingCard>
 
-    <div class="setting-card">
-      <div class="card-header">
-        <div class="card-icon refresh-icon">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M18.52 13.45a8 8 0 0 1-11.06 5.56"/><path d="M5.48 10.55a8 8 0 0 1 11.06-5.56"/>
-            <polyline points="15 2 18.54 5.46 15.01 8.99"/><polyline points="9 22 5.46 18.54 8.99 15.01"/>
-          </svg>
-        </div>
-        <div>
-          <div class="card-title">自动刷新</div>
-          <div class="card-desc">余额查询页面定时自动刷新数据</div>
-        </div>
+    <SettingCard title="自动刷新" description="余额查询页面定时自动刷新数据" icon-variant="accent">
+      <template #icon>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M18.52 13.45a8 8 0 0 1-11.06 5.56"/><path d="M5.48 10.55a8 8 0 0 1 11.06-5.56"/>
+          <polyline points="15 2 18.54 5.46 15.01 8.99"/><polyline points="9 22 5.46 18.54 8.99 15.01"/>
+        </svg>
+      </template>
+      <template #action>
         <button :class="['toggle-switch', { on: autoRefresh }]" @click="autoRefresh = !autoRefresh">
           <span class="toggle-knob"></span>
         </button>
-      </div>
+      </template>
       <div v-if="autoRefresh" class="refresh-options">
-        <div class="interval-row">
-          <span class="refresh-label">刷新间隔</span>
-          <div class="interval-btns">
-            <button
-              v-for="sec in [10, 30, 60, 120, 300]"
-              :key="sec"
-              :class="['interval-btn', { active: refreshInterval === sec }]"
-              @click="refreshInterval = sec"
-            >
-              {{ sec < 60 ? sec + '秒' : (sec / 60) + '分' }}
-            </button>
-          </div>
-        </div>
+        <IntervalSelector
+          v-model="refreshInterval"
+          :options="[10, 30, 60, 120, 300]"
+          label="刷新间隔"
+          :applied-value="appliedInterval"
+        />
         <div class="refresh-status">
-          <span class="status-dot"></span>
-          <span>{{ getRemainSec() > 0 ? `${getRemainSec()}秒后刷新` : '刷新中...' }}</span>
+          <div class="cache-bar-track">
+            <div
+              class="cache-bar-fill"
+              :style="{ width: getRemainSec() > 0 ? (getRemainSec() / appliedInterval * 100) + '%' : '0%' }"
+            ></div>
+          </div>
+          <span class="cache-text">{{ getRemainSec() > 0 ? `缓存剩余 ${getRemainSec()}s` : '刷新中...' }}</span>
         </div>
       </div>
-    </div>
+    </SettingCard>
 
     <button class="save-btn" @click="save">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -298,56 +282,42 @@ watch([apiKey, endpoint], () => {
       {{ saved ? '已保存' : '保存设置' }}
     </button>
 
-    <div class="setting-card">
-      <div class="card-header">
-        <div class="card-icon autostart-icon">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/>
-          </svg>
-        </div>
-        <div>
-          <div class="card-title">开机启动</div>
-          <div class="card-desc">系统登录时自动启动 ZhipuKit</div>
-        </div>
+    <SettingCard title="开机启动" description="系统登录时自动启动 ZhipuKit" icon-variant="success">
+      <template #icon>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/>
+        </svg>
+      </template>
+      <template #action>
         <button :class="['toggle-switch', { on: autoStart }]" @click="toggleAutoStart" @mousedown.stop>
           <span class="toggle-knob"></span>
         </button>
-      </div>
-    </div>
+      </template>
+    </SettingCard>
 
-    <div class="setting-card">
-      <div class="card-header">
-        <div class="card-icon debug-icon">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>
-          </svg>
-        </div>
-        <div>
-          <div class="card-title">调试工具</div>
-          <div class="card-desc">测试 API 连通性</div>
-        </div>
+    <SettingCard title="调试工具" description="测试 API 连通性" icon-variant="accent">
+      <template #icon>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>
+        </svg>
+      </template>
+      <template #action>
         <button class="debug-btn" :disabled="debugLoading || !apiKey" @click="runDebug">
           <span v-if="debugLoading" class="spinner-sm"></span>
           <span v-else>运行测试</span>
         </button>
-      </div>
+      </template>
       <div v-if="debugResult" :class="['debug-output', { ok: debugResult.ok, fail: !debugResult.ok }]">
         <pre>{{ debugResult.msg }}</pre>
       </div>
-    </div>
+    </SettingCard>
 
-    <div class="setting-card">
-      <div class="card-header">
-        <div class="card-icon dev-icon">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>
-          </svg>
-        </div>
-        <div>
-          <div class="card-title">开发者工具</div>
-          <div class="card-desc">调试与诊断</div>
-        </div>
-      </div>
+    <SettingCard title="开发者工具" description="调试与诊断" icon-variant="purple">
+      <template #icon>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>
+        </svg>
+      </template>
 
       <div class="dev-actions">
         <button class="dev-btn" @click="openDevtools">
@@ -373,21 +343,15 @@ watch([apiKey, endpoint], () => {
       <div v-if="appInfo" class="debug-output ok" style="margin-top: 12px;">
         <pre>{{ appInfo }}</pre>
       </div>
-    </div>
+    </SettingCard>
 
-    <div class="setting-card about-card">
-      <div class="card-header">
-        <div class="card-icon info-icon">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>
-          </svg>
-        </div>
-        <div>
-          <div class="card-title">关于</div>
-          <div class="card-desc">ZhipuKit v0.1.0</div>
-        </div>
-      </div>
-    </div>
+    <SettingCard title="关于" description="ZhipuKit v0.1.0" icon-variant="warning">
+      <template #icon>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>
+        </svg>
+      </template>
+    </SettingCard>
   </div>
 </template>
 
@@ -403,58 +367,6 @@ watch([apiKey, endpoint], () => {
   font-weight: 700;
   color: var(--text);
   margin-bottom: 8px;
-}
-
-.setting-card {
-  padding: 16px 0;
-}
-
-.card-header {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 16px;
-}
-
-.card-icon {
-  width: 36px;
-  height: 36px;
-  border-radius: 10px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-
-.key-icon {
-  background: var(--accent-light);
-  color: var(--accent);
-}
-
-.globe-icon {
-  background: var(--success-light);
-  color: var(--success);
-}
-
-.info-icon {
-  background: var(--warning-light);
-  color: var(--warning);
-}
-
-.card-title {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--text);
-}
-
-.card-desc {
-  font-size: 12px;
-  color: var(--text-secondary);
-  margin-top: 2px;
-}
-
-.setting-card > :not(.card-header) {
-  margin-left: 48px;
 }
 
 .input-group {
@@ -565,15 +477,6 @@ watch([apiKey, endpoint], () => {
   margin-left: 48px;
 }
 
-.about-card .card-desc {
-  font-size: 12px;
-}
-
-.refresh-icon {
-  background: var(--accent-light);
-  color: var(--accent);
-}
-
 .toggle-switch {
   margin-left: auto;
   width: 40px;
@@ -611,75 +514,34 @@ watch([apiKey, endpoint], () => {
   gap: 10px;
 }
 
-.interval-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.refresh-label {
-  font-size: 12px;
-  color: var(--text-secondary);
-  white-space: nowrap;
-}
-
-.interval-btns {
-  display: flex;
-  gap: 4px;
-}
-
-.interval-btn {
-  padding: 4px 10px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: transparent;
-  color: var(--text-secondary);
-  font-size: 11px;
-  font-weight: 500;
-  transition: all 0.15s;
-}
-
-.interval-btn:hover {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-
-.interval-btn.active {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #fff;
-}
-
 .refresh-status {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
+}
+
+.cache-bar-track {
+  flex: 1;
+  height: 4px;
+  background: var(--border);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.cache-bar-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+  transition: width 1s linear;
+}
+
+.cache-text {
   font-size: 11px;
   color: var(--text-secondary);
   font-variant-numeric: tabular-nums;
-}
-
-.status-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--accent);
-  animation: pulse 2s ease-in-out infinite;
-}
-
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.3; }
-}
-
-.dev-icon {
-  background: rgba(139, 92, 246, 0.08);
-  color: #8b5cf6;
-}
-
-.autostart-icon {
-  background: var(--success-light);
-  color: var(--success);
+  white-space: nowrap;
+  min-width: 72px;
+  text-align: right;
 }
 
 .dev-actions {
@@ -716,11 +578,6 @@ watch([apiKey, endpoint], () => {
 .dev-btn.warn:hover {
   opacity: 1;
   background: var(--danger-light);
-}
-
-.debug-icon {
-  background: var(--accent-light);
-  color: var(--accent);
 }
 
 .card-header .debug-btn {

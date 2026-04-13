@@ -237,12 +237,7 @@ pub async fn tray_show_main(app: tauri::AppHandle) -> Result<(), String> {
 #[tauri::command]
 pub async fn open_devtools(app: tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
-        #[cfg(debug_assertions)]
         window.open_devtools();
-        #[cfg(not(debug_assertions))]
-        {
-            let _ = window;
-        }
     }
 }
 

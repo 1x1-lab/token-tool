@@ -1,139 +1,11 @@
 <script setup lang="ts">
 import { ref, watch, onBeforeUnmount } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
-import { listen, type UnlistenFn } from '@tauri-apps/api/event'
-
-interface BalanceInfo {
-  balance: number
-  recharge_amount: number
-  give_amount: number
-  total_spend_amount: number
-  frozen_balance: number
-  available_balance: number
-}
-
-interface CodingPlanInfo {
-  level: string
-  hour5_percentage: number
-  hour5_next_reset: number
-  weekly_percentage: number
-  weekly_next_reset: number
-  mcp_total: number
-  mcp_used: number
-  mcp_remaining: number
-  mcp_next_reset: number
-}
+import { useBalanceCache } from '../composables/useBalanceCache'
 
 const props = defineProps<{ apiKey: string; endpoint: string }>()
 
-const loading = ref(false)
-const error = ref('')
-const balance = ref<BalanceInfo | null>(null)
-const codingPlan = ref<CodingPlanInfo | null>(null)
-
-async function queryBalance() {
-  if (!props.apiKey) {
-    error.value = '请先在设置中配置 API Key'
-    return
-  }
-
-  loading.value = true
-  error.value = ''
-
-  const errors: string[] = []
-
-  const results = await Promise.allSettled([
-    invoke<BalanceInfo>('query_balance', { apiKey: props.apiKey, endpoint: props.endpoint }),
-    invoke<CodingPlanInfo>('query_coding_plan', { apiKey: props.apiKey, endpoint: props.endpoint }),
-  ])
-
-  if (results[0].status === 'fulfilled') {
-    balance.value = results[0].value
-  } else {
-    errors.push(`${results[0].reason}`)
-  }
-
-  if (results[1].status === 'fulfilled') {
-    codingPlan.value = results[1].value
-  } else {
-    errors.push(`${results[1].reason}`)
-  }
-
-  if (!balance.value && !codingPlan.value) {
-    error.value = errors.join('；')
-  }
-
-  loading.value = false
-  localStorage.setItem('zhipu_last_refresh', String(Date.now()))
-
-  // 更新托盘数据
-  syncTrayData()
-}
-
-function syncTrayData() {
-  invoke('update_tray_data', {
-    balance: balance.value,
-    codingPlan: codingPlan.value,
-  }).catch(() => {})
-}
-
-// 监听 Rust 后端推送的自动刷新事件
-let unlistenBalance: UnlistenFn | null = null
-let unlistenPlan: UnlistenFn | null = null
-
-async function setupListeners() {
-  unlistenBalance = await listen<Record<string, unknown>>('balance-update', (e) => {
-    localStorage.setItem('zhipu_last_refresh', String(Date.now()))
-    const d = e.payload
-    balance.value = {
-      balance: (d.balance as number) ?? 0,
-      recharge_amount: (d.rechargeAmount as number) ?? 0,
-      give_amount: (d.giveAmount as number) ?? 0,
-      total_spend_amount: (d.totalSpendAmount as number) ?? 0,
-      frozen_balance: (d.frozenBalance as number) ?? 0,
-      available_balance: (d.availableBalance as number) ?? 0,
-    }
-    syncTrayData()
-  })
-
-  unlistenPlan = await listen<Record<string, unknown>>('plan-update', (e) => {
-    localStorage.setItem('zhipu_last_refresh', String(Date.now()))
-    const data = e.payload
-    const limits = (data.limits as Array<Record<string, unknown>>) ?? []
-    const level = (data.level as string) ?? 'unknown'
-
-    let hour5_percentage = 0, hour5_next_reset = 0
-    let weekly_percentage = 0, weekly_next_reset = 0
-    let mcp_total = 0, mcp_used = 0, mcp_remaining = 0, mcp_next_reset = 0
-    let tokensIdx = 0
-
-    for (const lim of limits) {
-      const t = (lim.type as string) ?? ''
-      const pct = (lim.percentage as number) ?? 0
-      const nrt = (lim.nextResetTime as number) ?? 0
-
-      if (t === 'TIME_LIMIT') {
-        mcp_total = (lim.usage as number) ?? 0
-        mcp_used = (lim.currentValue as number) ?? 0
-        mcp_remaining = (lim.remaining as number) ?? 0
-        mcp_next_reset = nrt
-      } else if (t === 'TOKENS_LIMIT') {
-        if (tokensIdx === 0) { hour5_percentage = pct; hour5_next_reset = nrt }
-        else { weekly_percentage = pct; weekly_next_reset = nrt }
-        tokensIdx++
-      }
-    }
-
-    codingPlan.value = {
-      level, hour5_percentage, hour5_next_reset,
-      weekly_percentage, weekly_next_reset,
-      mcp_total, mcp_used, mcp_remaining, mcp_next_reset,
-    }
-    syncTrayData()
-  })
-}
-
-setupListeners()
+const { balance, codingPlan, loading, fetchFresh, fetchCached, restoreFromCache, setupListeners } = useBalanceCache()
 
 // 自动刷新：启动/停止 Rust 端定时任务
 const autoRefresh = ref(localStorage.getItem('zhipu_auto_refresh') === 'true')
@@ -146,6 +18,16 @@ function startRustAutoRefresh() {
     endpoint: props.endpoint,
     intervalSecs: refreshInterval.value,
   }).catch(() => {})
+}
+
+// 缓存有效期内不启动 Rust 定时器（避免立即查询），到期后再启动
+let autoRefreshTimer: ReturnType<typeof setTimeout> | null = null
+
+function scheduleAutoRefresh() {
+  if (!props.apiKey || !autoRefresh.value) return
+  const lastRefresh = Number(localStorage.getItem('zhipu_last_refresh') || '0')
+  const remaining = Math.max(0, 60_000 - (Date.now() - lastRefresh))
+  autoRefreshTimer = setTimeout(startRustAutoRefresh, remaining)
 }
 
 // 检查设置变化
@@ -163,14 +45,12 @@ const settingsCheck = setInterval(() => {
   }
 }, 3000)
 
-if (autoRefresh.value && props.apiKey) {
-  startRustAutoRefresh()
-}
+let unsubListeners: (() => void) | null = null
 
 onBeforeUnmount(() => {
   clearInterval(settingsCheck)
-  if (unlistenBalance) unlistenBalance()
-  if (unlistenPlan) unlistenPlan()
+  if (autoRefreshTimer) clearTimeout(autoRefreshTimer)
+  if (unsubListeners) unsubListeners()
 })
 
 function fmt(v: number): string {
@@ -218,12 +98,10 @@ function getCountdown(resetTime: number): string {
 // 自动查询
 watch(() => props.apiKey, (key) => {
   if (key) {
-    if (!balance.value && !codingPlan.value && !loading.value) {
-      queryBalance()
-    }
-    if (autoRefresh.value) {
-      startRustAutoRefresh()
-    }
+    restoreFromCache()
+    fetchCached(props.apiKey, props.endpoint)
+    setupListeners().then(unsub => { unsubListeners = unsub })
+    if (autoRefresh.value) scheduleAutoRefresh()
   }
 }, { immediate: true })
 </script>
@@ -233,7 +111,7 @@ watch(() => props.apiKey, (key) => {
     <div class="page-header">
       <h2 class="page-title">余额查询</h2>
       <div class="header-actions">
-        <button class="query-btn-sm" :disabled="loading || !apiKey" @click="queryBalance">
+        <button class="query-btn-sm" :disabled="loading || !apiKey" @click="fetchFresh(apiKey, endpoint)">
           <span v-if="loading" class="spinner-sm"></span>
           <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
             <polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
@@ -248,13 +126,6 @@ watch(() => props.apiKey, (key) => {
         <circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>
       </svg>
       请先前往 <strong>设置</strong> 页面配置 API Key
-    </div>
-
-    <div v-if="error" class="error-banner">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/>
-      </svg>
-      {{ error }}
     </div>
 
     <!-- Coding Plan -->
@@ -362,7 +233,7 @@ watch(() => props.apiKey, (key) => {
       </div>
     </div>
 
-    <div v-if="!balance && !codingPlan && !error && !loading" class="empty">
+    <div v-if="!balance && !codingPlan && !loading" class="empty">
       <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" opacity="0.2">
         <rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/>
       </svg>
@@ -430,18 +301,6 @@ watch(() => props.apiKey, (key) => {
   border-radius: var(--radius-sm);
   font-size: 13px;
   color: var(--accent);
-}
-
-.error-banner {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 12px 16px;
-  background: var(--danger-light);
-  border: 1px solid var(--danger);
-  border-radius: var(--radius-sm);
-  font-size: 13px;
-  color: var(--danger);
 }
 
 .section {

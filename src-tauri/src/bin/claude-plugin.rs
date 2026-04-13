@@ -351,8 +351,8 @@ async fn main() {
     let seg_cfg = read_segment_config();
     let cwd = stdin_data.as_ref().and_then(|d| d.cwd.clone());
     let stdin_model = stdin_data.as_ref().and_then(|d| d.model.clone());
-    // 优先使用 settings.json 中用户配置的模型名，而非 stdin 传入的 Claude 内部模型名
-    let effective_model = settings_model.as_deref().or(stdin_model.as_deref());
+    // 优先使用 stdin 传入的运行时模型名（实际使用的模型），回退到 settings.json 配置
+    let effective_model = stdin_model.as_deref().or(settings_model.as_deref());
     let git_branch = cwd.as_deref().and_then(|dir| get_git_branch(dir));
 
     // ── Phase 2: 获取配额数据 ──

@@ -1,6 +1,11 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
+import { useToast } from '../composables/useToast'
+import SettingCard from './SettingCard.vue'
+import IntervalSelector from './IntervalSelector.vue'
+
+const toast = useToast()
 
 const props = defineProps<{
   zhipuApiKey: string
@@ -29,10 +34,8 @@ interface ClaudeCodeConfig {
 const status = ref<ClaudeCodeStatus | null>(null)
 const cacheDuration = ref(Number(localStorage.getItem('zhipu_cache_duration') || '300'))
 const appliedCacheDuration = ref(cacheDuration.value)
-const cacheSaved = ref(false)
 
 const loading = ref(false)
-const error = ref('')
 const saved = ref(false)
 
 // Hook 相关状态
@@ -77,13 +80,12 @@ const segmentLabels: Record<keyof SegmentConfig, string> = {
   hour5: '5h 配额',
   mcp: 'MCP 用量',
 }
-const segmentSaved = ref(false)
 
 async function detect() {
   try {
     status.value = await invoke<ClaudeCodeStatus>('detect_claude_code')
   } catch (e) {
-    error.value = String(e)
+    toast.showError(String(e))
   }
 }
 
@@ -98,9 +100,8 @@ async function loadConfig() {
     opusModel.value = config.anthropic_default_opus_model ?? ''
     timeoutMs.value = config.api_timeout_ms ?? ''
     brokenPlugins.value = config.broken_plugins ?? []
-    error.value = ''
   } catch (e) {
-    error.value = String(e)
+    toast.showError(String(e))
   }
 }
 
@@ -115,10 +116,18 @@ async function saveConfig() {
       anthropicDefaultOpusModel: opusModel.value || null,
       apiTimeoutMs: timeoutMs.value || null,
     })
+    // 同步保存缓存时间
+    if (cacheDuration.value !== appliedCacheDuration.value) {
+      localStorage.setItem('zhipu_cache_duration', String(cacheDuration.value))
+      await invoke('save_zhipu_cache_duration', { seconds: cacheDuration.value })
+      appliedCacheDuration.value = cacheDuration.value
+    }
+    // 同步保存展示内容配置
+    await invoke('save_segment_config', { config: segmentConfig.value })
     saved.value = true
     setTimeout(() => { saved.value = false }, 2000)
   } catch (e) {
-    error.value = String(e)
+    toast.showError(String(e))
   }
 }
 
@@ -129,14 +138,13 @@ async function fixBrokenPlugins() {
     await invoke('setup_claude_hook', { enabled: hookEnabled.value })
     brokenPlugins.value = []
   } catch (e) {
-    error.value = String(e)
+    toast.showError(String(e))
   }
   fixingPlugins.value = false
 }
 
 async function refresh() {
   loading.value = true
-  error.value = ''
   await detect()
   if (status.value?.installed) {
     await loadConfig()
@@ -164,7 +172,7 @@ async function installHook() {
     await invoke('setup_claude_hook', { enabled: true })
     hookEnabled.value = true
   } catch (e) {
-    error.value = String(e)
+    toast.showError(String(e))
   }
   hookLoading.value = false
 }
@@ -176,7 +184,7 @@ async function uninstallHook() {
     await invoke('setup_claude_hook', { enabled: false })
     hookEnabled.value = false
   } catch (e) {
-    error.value = String(e)
+    toast.showError(String(e))
   }
   hookLoading.value = false
 }
@@ -212,34 +220,12 @@ function maskToken(token: string): string {
   return token.slice(0, 4) + '****' + token.slice(-4)
 }
 
-async function saveCacheDuration() {
-  try {
-    localStorage.setItem('zhipu_cache_duration', String(cacheDuration.value))
-    await invoke('save_zhipu_cache_duration', { seconds: cacheDuration.value })
-    appliedCacheDuration.value = cacheDuration.value
-    cacheSaved.value = true
-    setTimeout(() => { cacheSaved.value = false }, 2000)
-  } catch (e) {
-    error.value = String(e)
-  }
-}
-
 async function loadSegmentConfig() {
   try {
     const cfg = await invoke<SegmentConfig>('read_segment_config')
     segmentConfig.value = { ...defaultSegmentConfig, ...cfg }
   } catch {
     segmentConfig.value = { ...defaultSegmentConfig }
-  }
-}
-
-async function saveSegmentConfigAction() {
-  try {
-    await invoke('save_segment_config', { config: segmentConfig.value })
-    segmentSaved.value = true
-    setTimeout(() => { segmentSaved.value = false }, 2000)
-  } catch (e) {
-    error.value = String(e)
   }
 }
 
@@ -251,32 +237,29 @@ onMounted(() => refresh())
     <h2 class="page-title">Claude Code 配置</h2>
 
     <!-- 安装状态 -->
-    <div class="setting-card">
-      <div class="card-header">
-        <div class="card-icon terminal-icon">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <polyline points="4 17 10 11 4 5"/>
-            <line x1="12" y1="19" x2="20" y2="19"/>
-          </svg>
-        </div>
-        <div>
-          <div class="card-title">安装状态</div>
-          <div class="card-desc">
-            <span v-if="loading">检测中...</span>
-            <span v-else-if="status?.installed" class="status-installed">
-              已安装{{ status.version ? ` v${status.version}` : '' }}
-            </span>
-            <span v-else class="status-not-found">未检测到 Claude Code</span>
-          </div>
-        </div>
-        <button class="dev-btn" style="margin-left: auto;" @click="refresh">
+    <SettingCard title="安装状态" icon-variant="purple">
+      <template #icon>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="4 17 10 11 4 5"/>
+          <line x1="12" y1="19" x2="20" y2="19"/>
+        </svg>
+      </template>
+      <template #description>
+        <span v-if="loading">检测中...</span>
+        <span v-else-if="status?.installed" class="status-installed">
+          已安装{{ status.version ? ` v${status.version}` : '' }}
+        </span>
+        <span v-else class="status-not-found">未检测到 Claude Code</span>
+      </template>
+      <template #action>
+        <button class="dev-btn" @click="refresh">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M18.52 13.45a8 8 0 0 1-11.06 5.56"/><path d="M5.48 10.55a8 8 0 0 1 11.06-5.56"/>
             <polyline points="15 2 18.54 5.46 15.01 8.99"/><polyline points="9 22 5.46 18.54 8.99 15.01"/>
           </svg>
           重新检测
         </button>
-      </div>
+      </template>
       <div v-if="status?.installed && status.path" class="path-display">
         <span class="path-label">可执行路径</span>
         <code class="path-value">{{ status.path }}</code>
@@ -293,7 +276,7 @@ onMounted(() => refresh())
           <svg v-else width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
         </button>
       </div>
-    </div>
+    </SettingCard>
 
     <!-- 插件异常警告 -->
     <div v-if="brokenPlugins.length > 0 && status?.installed" class="warning-banner">
@@ -316,17 +299,13 @@ onMounted(() => refresh())
     </div>
 
     <!-- 状态栏插件 -->
-    <div v-if="status?.installed" class="setting-card">
-      <div class="card-header">
-        <div class="card-icon hook-icon">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/>
-          </svg>
-        </div>
-        <div>
-          <div class="card-title">状态栏插件</div>
-          <div class="card-desc">在 Claude Code 状态栏显示智谱套餐信息</div>
-        </div>
+    <SettingCard v-if="status?.installed" title="状态栏插件" description="在 Claude Code 状态栏显示智谱套餐信息" icon-variant="success">
+      <template #icon>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/>
+        </svg>
+      </template>
+      <template #action>
         <button
           v-if="!hookEnabled"
           class="hook-action-btn install-btn"
@@ -349,40 +328,17 @@ onMounted(() => refresh())
           </svg>
           {{ hookLoading ? '处理中...' : '卸载' }}
         </button>
-      </div>
+      </template>
       <div v-if="hookEnabled" class="hook-details">
-        <div class="interval-row">
-          <span class="cache-label">缓存时间</span>
-          <div class="interval-btns">
-            <button
-              v-for="sec in [60, 180, 300, 600, 900, 1800]"
-              :key="sec"
-              :class="['interval-btn', { active: appliedCacheDuration === sec && cacheDuration === sec, pending: cacheDuration === sec && appliedCacheDuration !== sec }]"
-              @click="cacheDuration = sec"
-            >
-              {{ sec < 60 ? sec + '秒' : (sec / 60) + '分' }}
-            </button>
-          </div>
-          <button
-            v-if="cacheDuration !== appliedCacheDuration"
-            class="cache-save-btn"
-            @click="saveCacheDuration"
-          >
-            {{ cacheSaved ? '已保存' : '保存' }}
-          </button>
-        </div>
-        <button class="test-btn" @click="testHook" :disabled="hookTestResult === '运行中...'">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <polygon points="5 3 19 12 5 21 5 3"/>
-          </svg>
-          测试
-        </button>
+        <IntervalSelector
+          v-model="cacheDuration"
+          :options="[60, 180, 300, 600, 900, 1800]"
+          label="缓存时间"
+          :applied-value="appliedCacheDuration"
+        />
         <div class="segment-config">
           <div class="segment-header">
             <span class="segment-label">展示内容</span>
-            <button class="cache-save-btn" @click="saveSegmentConfigAction">
-              {{ segmentSaved ? '已保存' : '保存' }}
-            </button>
           </div>
           <div class="segment-toggles">
             <label v-for="(_, key) in defaultSegmentConfig" :key="key" class="segment-toggle">
@@ -391,26 +347,28 @@ onMounted(() => refresh())
             </label>
           </div>
         </div>
+        <button class="test-btn" @click="testHook" :disabled="hookTestResult === '运行中...'">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="5 3 19 12 5 21 5 3"/>
+          </svg>
+          测试
+        </button>
         <div v-if="hookTestResult" :class="['debug-output', { ok: !hookTestResult.startsWith('错误'), fail: hookTestResult.startsWith('错误') }]">
           <pre>{{ hookTestResult }}</pre>
         </div>
       </div>
-    </div>
+    </SettingCard>
 
     <!-- 配置编辑（仅安装后显示） -->
     <template v-if="status?.installed">
       <!-- API 密钥 -->
-      <div class="setting-card">
-        <div class="card-header">
-          <div class="card-icon key-icon">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/>
-            </svg>
-          </div>
-          <div>
-            <div class="card-title">API 密钥</div>
-            <div class="card-desc">ANTHROPIC_AUTH_TOKEN 配置</div>
-          </div>
+      <SettingCard title="API 密钥" description="ANTHROPIC_AUTH_TOKEN 配置" icon-variant="accent">
+        <template #icon>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/>
+          </svg>
+        </template>
+        <template #action>
           <button
             class="fill-btn"
             :disabled="!zhipuApiKey && !localApiKey"
@@ -419,7 +377,7 @@ onMounted(() => refresh())
           >
             一键填入
           </button>
-        </div>
+        </template>
         <div class="fields">
           <div class="field-row">
             <label class="field-label">ANTHROPIC_AUTH_TOKEN</label>
@@ -442,24 +400,18 @@ onMounted(() => refresh())
           </div>
           <div v-if="authToken" class="key-preview">{{ maskToken(authToken) }}</div>
         </div>
-      </div>
+      </SettingCard>
 
       <!-- 默认模型 -->
-      <div class="setting-card">
-        <div class="card-header">
-          <div class="card-icon model-icon">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="4" y="4" width="16" height="16" rx="2"/>
-              <rect x="9" y="9" width="6" height="6"/>
-              <path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/><path d="M2 9h2"/>
-              <path d="M20 15h2"/><path d="M20 9h2"/><path d="M9 2v2"/><path d="M9 20v2"/>
-            </svg>
-          </div>
-          <div>
-            <div class="card-title">默认模型</div>
-            <div class="card-desc">Claude Code 使用的默认模型和超时设置</div>
-          </div>
-        </div>
+      <SettingCard title="默认模型" description="Claude Code 使用的默认模型和超时设置" icon-variant="accent">
+        <template #icon>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="4" y="4" width="16" height="16" rx="2"/>
+            <rect x="9" y="9" width="6" height="6"/>
+            <path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/><path d="M2 9h2"/>
+            <path d="M20 15h2"/><path d="M20 9h2"/><path d="M9 2v2"/><path d="M9 20v2"/>
+          </svg>
+        </template>
         <div class="fields">
           <div class="field-row">
             <label class="field-label">model</label>
@@ -470,44 +422,32 @@ onMounted(() => refresh())
             <input v-model="timeoutMs" class="input-field" placeholder="3000000" />
           </div>
         </div>
-      </div>
+      </SettingCard>
 
       <!-- API 端点 -->
-      <div class="setting-card">
-        <div class="card-header">
-          <div class="card-icon globe-icon">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
-            </svg>
-          </div>
-          <div>
-            <div class="card-title">API 端点</div>
-            <div class="card-desc">ANTHROPIC_BASE_URL 配置</div>
-          </div>
-        </div>
+      <SettingCard title="API 端点" description="ANTHROPIC_BASE_URL 配置" icon-variant="success">
+        <template #icon>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+          </svg>
+        </template>
         <div class="fields">
           <div class="field-row">
             <label class="field-label">ANTHROPIC_BASE_URL</label>
             <input v-model="baseUrl" class="input-field" placeholder="https://api.anthropic.com" />
           </div>
         </div>
-      </div>
+      </SettingCard>
 
       <!-- 模型映射 -->
-      <div class="setting-card">
-        <div class="card-header">
-          <div class="card-icon layers-icon">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <polygon points="12 2 2 7 12 12 22 7 12 2"/>
-              <polyline points="2 17 12 22 22 17"/>
-              <polyline points="2 12 12 17 22 12"/>
-            </svg>
-          </div>
-          <div>
-            <div class="card-title">模型映射</div>
-            <div class="card-desc">自定义各层级使用的模型</div>
-          </div>
-        </div>
+      <SettingCard title="模型映射" description="自定义各层级使用的模型" icon-variant="warning">
+        <template #icon>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="12 2 2 7 12 12 22 7 12 2"/>
+            <polyline points="2 17 12 22 22 17"/>
+            <polyline points="2 12 12 17 22 12"/>
+          </svg>
+        </template>
         <div class="fields">
           <div class="field-row">
             <label class="field-label">Haiku</label>
@@ -522,7 +462,7 @@ onMounted(() => refresh())
             <input v-model="opusModel" class="input-field" placeholder="claude-opus-4-20250514" />
           </div>
         </div>
-      </div>
+      </SettingCard>
 
       <button class="save-btn" @click="saveConfig">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -531,12 +471,6 @@ onMounted(() => refresh())
         {{ saved ? '已保存' : '保存配置' }}
       </button>
     </template>
-
-    <!-- 错误提示 -->
-    <div v-if="error" class="error-banner">
-      <span>{{ error }}</span>
-      <button class="error-close" @click="error = ''">&times;</button>
-    </div>
   </div>
 </template>
 
@@ -554,64 +488,6 @@ onMounted(() => refresh())
   margin-bottom: 8px;
 }
 
-.setting-card {
-  padding: 16px 0;
-}
-
-.card-header {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 16px;
-}
-
-.card-icon {
-  width: 36px;
-  height: 36px;
-  border-radius: 10px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-
-.terminal-icon {
-  background: rgba(139, 92, 246, 0.08);
-  color: #8b5cf6;
-}
-
-.key-icon {
-  background: var(--accent-light);
-  color: var(--accent);
-}
-
-.model-icon {
-  background: var(--accent-light);
-  color: var(--accent);
-}
-
-.globe-icon {
-  background: var(--success-light);
-  color: var(--success);
-}
-
-.layers-icon {
-  background: var(--warning-light);
-  color: var(--warning);
-}
-
-.card-title {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--text);
-}
-
-.card-desc {
-  font-size: 12px;
-  color: var(--text-secondary);
-  margin-top: 2px;
-}
-
 .status-installed {
   color: var(--success);
   font-weight: 500;
@@ -619,10 +495,6 @@ onMounted(() => refresh())
 
 .status-not-found {
   color: var(--text-secondary);
-}
-
-.setting-card > :not(.card-header) {
-  margin-left: 48px;
 }
 
 .path-display {
@@ -790,32 +662,6 @@ onMounted(() => refresh())
   color: var(--accent);
 }
 
-.error-banner {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 10px 14px;
-  background: var(--danger-light);
-  border: 1px solid var(--danger);
-  border-radius: var(--radius-xs);
-  color: var(--danger);
-  font-size: 12px;
-}
-
-.error-close {
-  background: none;
-  border: none;
-  color: var(--danger);
-  font-size: 16px;
-  cursor: pointer;
-  padding: 0 4px;
-}
-
-.hook-icon {
-  background: var(--success-light);
-  color: var(--success);
-}
-
 .hook-details {
   display: flex;
   flex-direction: column;
@@ -952,70 +798,6 @@ onMounted(() => refresh())
 
 .fix-btn:hover:not(:disabled) { opacity: 0.85; }
 .fix-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-
-.interval-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.cache-label {
-  font-size: 12px;
-  color: var(--text-secondary);
-  white-space: nowrap;
-}
-
-.interval-btns {
-  display: flex;
-  gap: 4px;
-  flex-wrap: wrap;
-}
-
-.interval-btn {
-  padding: 4px 10px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: transparent;
-  color: var(--text-secondary);
-  font-size: 11px;
-  font-weight: 500;
-  transition: all 0.15s;
-  cursor: pointer;
-}
-
-.interval-btn:hover {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-
-.interval-btn.active {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #fff;
-}
-
-.interval-btn.pending {
-  border-style: dashed;
-  border-color: var(--accent);
-  color: var(--accent);
-  background: transparent;
-}
-
-.cache-save-btn {
-  margin-left: auto;
-  padding: 4px 12px;
-  background: var(--accent);
-  border: none;
-  border-radius: 4px;
-  color: #fff;
-  font-size: 11px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: opacity 0.15s;
-  flex-shrink: 0;
-}
-
-.cache-save-btn:hover { opacity: 0.85; }
 
 .test-btn {
   display: inline-flex;

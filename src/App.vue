@@ -6,6 +6,7 @@ import TokenCalculator from './components/TokenCalculator.vue'
 import BalanceQuery from './components/BalanceQuery.vue'
 import SettingsView from './components/SettingsView.vue'
 import ClaudeConfig from './components/ClaudeConfig.vue'
+import ToastContainer from './components/ToastContainer.vue'
 
 type Tab = 'balance' | 'calculator' | 'claude' | 'settings'
 
@@ -60,6 +61,8 @@ function handleDrag(e: MouseEvent) {
 </script>
 
 <template>
+  <ToastContainer />
+
   <!-- 关闭确认弹窗 -->
   <div v-if="showCloseDialog" class="dialog-overlay" @click.self="showCloseDialog = false">
     <div class="dialog-box">

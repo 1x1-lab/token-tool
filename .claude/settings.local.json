@@ -37,7 +37,11 @@
       "Bash(gh auth:*)",
       "Bash(git clone:*)",
       "Read(//c/Users/Tian/.cargo/registry/src/mirrors.ustc.edu.cn-38d0e5eb5da2abae/terminal_size-0.4.4/**)",
-      "Bash(cargo test:*)"
+      "Bash(cargo test:*)",
+      "Bash(npx vue-tsc:*)",
+      "Bash(npx vite:*)",
+      "mcp__web-search-prime__web_search_prime",
+      "Bash(find . -name \"*.ts\" -path \"*/widgets/*\" -exec basename {} \\\\;)"
     ]
   }
 }

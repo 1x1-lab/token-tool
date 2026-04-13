@@ -183,6 +183,28 @@ pub async fn save_claude_config(
     Ok(())
 }
 
+/// 去除 ANSI 转义序列
+fn strip_ansi(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            if chars.peek() == Some(&'[') {
+                chars.next();
+                while let Some(&next) = chars.peek() {
+                    chars.next();
+                    if next.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            }
+        } else {
+            result.push(c);
+        }
+    }
+    result
+}
+
 /// 验证 enabledPlugins 中引用的插件是否有效安装
 /// 返回需要移除的插件 key 列表
 fn find_broken_plugins(
@@ -477,16 +499,16 @@ pub async fn test_zhipukit_status() -> Result<String, String> {
 
     if output.status.success() {
         // 解析 JSON 输出，提取 additionalContext 用于前端展示
-        if let Ok(json) = serde_json::from_str::<serde_json::Value>(stdout.trim()) {
-            let ctx = json
-                .get("hookSpecificOutput")
+        let display = if let Ok(json) = serde_json::from_str::<serde_json::Value>(stdout.trim()) {
+            json.get("hookSpecificOutput")
                 .and_then(|o| o.get("additionalContext"))
                 .and_then(|v| v.as_str())
-                .unwrap_or(&stdout);
-            Ok(ctx.to_string())
+                .unwrap_or(&stdout)
+                .to_string()
         } else {
-            Ok(stdout.trim().to_string())
-        }
+            stdout.trim().to_string()
+        };
+        Ok(strip_ansi(&display))
     } else {
         Err(format!("{}{}", stdout, stderr).trim().to_string())
     }
