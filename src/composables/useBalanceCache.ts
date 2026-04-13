@@ -29,7 +29,10 @@ interface CacheEntry<T> {
   data: T
 }
 
-const CACHE_TTL = 60_000
+function getCacheTTL(): number {
+  const val = Number(localStorage.getItem('zhipu_cache_duration'))
+  return val > 0 ? val * 1000 : 60_000
+}
 const KEY_BALANCE = 'zhipu_cache_balance'
 const KEY_PLAN = 'zhipu_cache_plan'
 const KEY_LAST_REFRESH = 'zhipu_last_refresh'
@@ -115,7 +118,8 @@ export async function fetchCached(apiKey: string, endpoint: string) {
       const cachedBalance: CacheEntry<BalanceInfo> = JSON.parse(rawBalance)
       const cachedPlan: CacheEntry<CodingPlanInfo> = JSON.parse(rawPlan)
 
-      if (now - cachedBalance.timestamp < CACHE_TTL && now - cachedPlan.timestamp < CACHE_TTL) {
+      const ttl = getCacheTTL()
+      if (now - cachedBalance.timestamp < ttl && now - cachedPlan.timestamp < ttl) {
         balance.value = cachedBalance.data
         codingPlan.value = cachedPlan.data
         return

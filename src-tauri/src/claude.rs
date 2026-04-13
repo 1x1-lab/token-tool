@@ -527,6 +527,7 @@ pub async fn save_zhipu_cache_duration(seconds: u64) -> Result<(), String> {
 
 /// 段展示配置
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct SegmentConfig {
     pub tier: bool,
     pub balance: bool,
