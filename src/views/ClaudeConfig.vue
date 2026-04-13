@@ -2,8 +2,10 @@
 import { ref, onMounted } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { useToast } from '../composables/useToast'
-import SettingCard from './SettingCard.vue'
-import IntervalSelector from './IntervalSelector.vue'
+import SettingCard from '../components/SettingCard.vue'
+import IntervalSelector from '../components/IntervalSelector.vue'
+import ToggleBtn from '../components/ToggleBtn.vue'
+import Checkbox from '../components/Checkbox.vue'
 
 const toast = useToast()
 
@@ -63,11 +65,12 @@ interface SegmentConfig {
   context: boolean
   hour5: boolean
   mcp: boolean
+  cacheTime: boolean
 }
 
 const defaultSegmentConfig: SegmentConfig = {
   tier: true, balance: true, git: true, model: true,
-  context: true, hour5: true, mcp: true,
+  context: true, hour5: true, mcp: true, cacheTime: true,
 }
 
 const segmentConfig = ref<SegmentConfig>({ ...defaultSegmentConfig })
@@ -79,6 +82,42 @@ const segmentLabels: Record<keyof SegmentConfig, string> = {
   context: '上下文用量',
   hour5: '5h 配额',
   mcp: 'MCP 用量',
+  cacheTime: '缓存时间',
+}
+
+const colorOptions = [
+  { value: 'black', label: '黑色' },
+  { value: 'red', label: '红色' },
+  { value: 'green', label: '绿色' },
+  { value: 'yellow', label: '黄色' },
+  { value: 'blue', label: '蓝色' },
+  { value: 'magenta', label: '紫色' },
+  { value: 'cyan', label: '青色' },
+  { value: 'white', label: '白色' },
+]
+
+interface BarColorsConfig {
+  normal: string
+  warning: string
+  danger: string
+}
+
+const defaultBarColors: BarColorsConfig = { normal: 'green', warning: 'yellow', danger: 'red' }
+const barColors = ref<BarColorsConfig>({ ...defaultBarColors })
+
+async function loadBarColors() {
+  try {
+    const cfg = await invoke<BarColorsConfig>('read_bar_colors')
+    barColors.value = { ...defaultBarColors, ...cfg }
+  } catch {
+    barColors.value = { ...defaultBarColors }
+  }
+}
+
+async function saveBarColors() {
+  try {
+    await invoke('save_bar_colors', { colors: barColors.value })
+  } catch {}
 }
 
 async function detect() {
@@ -151,6 +190,7 @@ async function refresh() {
     await checkHookStatus()
     if (hookEnabled.value) {
       await loadSegmentConfig()
+      await loadBarColors()
     }
   }
   loading.value = false
@@ -342,8 +382,33 @@ onMounted(() => refresh())
           </div>
           <div class="segment-toggles">
             <label v-for="(_, key) in defaultSegmentConfig" :key="key" class="segment-toggle">
-              <input type="checkbox" v-model="segmentConfig[key as keyof SegmentConfig]" />
+              <Checkbox v-model="segmentConfig[key as keyof SegmentConfig]" />
               <span class="segment-name">{{ segmentLabels[key as keyof SegmentConfig] }}</span>
+            </label>
+          </div>
+        </div>
+        <div class="color-config">
+          <div class="segment-header">
+            <span class="segment-label">进度条颜色</span>
+          </div>
+          <div class="color-row">
+            <label class="color-item">
+              <span class="color-label">正常</span>
+              <select v-model="barColors.normal" @change="saveBarColors" class="color-select">
+                <option v-for="opt in colorOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
+              </select>
+            </label>
+            <label class="color-item">
+              <span class="color-label">警告</span>
+              <select v-model="barColors.warning" @change="saveBarColors" class="color-select">
+                <option v-for="opt in colorOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
+              </select>
+            </label>
+            <label class="color-item">
+              <span class="color-label">危险</span>
+              <select v-model="barColors.danger" @change="saveBarColors" class="color-select">
+                <option v-for="opt in colorOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
+              </select>
             </label>
           </div>
         </div>
@@ -388,14 +453,7 @@ onMounted(() => refresh())
                 class="input-field"
                 placeholder="输入 API 密钥"
               />
-              <button class="toggle-btn" @click="showToken = !showToken" :title="showToken ? '隐藏' : '显示'">
-                <svg v-if="!showToken" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>
-                </svg>
-                <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/>
-                </svg>
-              </button>
+              <ToggleBtn v-model="showToken" />
             </div>
           </div>
           <div v-if="authToken" class="key-preview">{{ maskToken(authToken) }}</div>
@@ -572,25 +630,6 @@ onMounted(() => refresh())
 .input-field {
   flex: 1;
   min-width: 0;
-}
-
-.toggle-btn {
-  width: 40px;
-  height: 40px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-xs);
-  color: var(--text-secondary);
-  transition: all 0.15s;
-  flex-shrink: 0;
-}
-
-.toggle-btn:hover {
-  color: var(--text);
-  border-color: var(--text-secondary);
 }
 
 .key-preview {
@@ -826,6 +865,39 @@ onMounted(() => refresh())
   cursor: not-allowed;
 }
 
+.color-config {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.color-row {
+  display: flex;
+  gap: 12px;
+}
+
+.color-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.color-label {
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.color-select {
+  padding: 2px 6px;
+  font-size: 11px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
 .segment-config {
   display: flex;
   flex-direction: column;
@@ -856,13 +928,6 @@ onMounted(() => refresh())
   gap: 5px;
   cursor: pointer;
   user-select: none;
-}
-
-.segment-toggle input[type="checkbox"] {
-  accent-color: var(--accent);
-  width: 14px;
-  height: 14px;
-  cursor: pointer;
 }
 
 .segment-name {

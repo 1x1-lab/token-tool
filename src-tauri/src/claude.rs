@@ -1,5 +1,5 @@
 use crate::types::{ClaudeCodeConfig, ClaudeCodeStatus};
-use crate::utils::{build_shell_command, get_home_dir};
+use crate::utils::{build_shell_command, get_home_dir, strip_ansi};
 
 #[tauri::command]
 pub async fn detect_claude_code() -> Result<ClaudeCodeStatus, String> {
@@ -183,28 +183,6 @@ pub async fn save_claude_config(
     Ok(())
 }
 
-/// 去除 ANSI 转义序列
-fn strip_ansi(s: &str) -> String {
-    let mut result = String::with_capacity(s.len());
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\x1b' {
-            if chars.peek() == Some(&'[') {
-                chars.next();
-                while let Some(&next) = chars.peek() {
-                    chars.next();
-                    if next.is_ascii_alphabetic() {
-                        break;
-                    }
-                }
-            }
-        } else {
-            result.push(c);
-        }
-    }
-    result
-}
-
 /// 验证 enabledPlugins 中引用的插件是否有效安装
 /// 返回需要移除的插件 key 列表
 fn find_broken_plugins(
@@ -241,19 +219,11 @@ fn find_broken_plugins(
             .and_then(|entries| entries.as_array())
             .map(|entries| {
                 entries.iter().any(|entry| {
-                    // 检查安装路径是否存在且包含 plugin.json
+                    // 检查安装路径是否存在（目录存在即视为有效）
                     entry
                         .get("installPath")
                         .and_then(|p| p.as_str())
-                        .map(|path| {
-                            let install_dir = std::path::Path::new(path);
-                            install_dir.exists()
-                                && (install_dir
-                                    .join(".claude-plugin")
-                                    .join("plugin.json")
-                                    .exists()
-                                    || install_dir.join("plugin.json").exists())
-                        })
+                        .map(|path| std::path::Path::new(path).exists())
                         .unwrap_or(false)
                 })
             })
@@ -288,15 +258,8 @@ fn check_marketplace_plugin(key: &str, home: &std::path::Path) -> bool {
         .join("plugins")
         .join(plugin_name);
 
-    if !plugin_dir.exists() {
-        return false;
-    }
-
-    // 必须有 .claude-plugin/plugin.json 才算完整
-    plugin_dir
-        .join(".claude-plugin")
-        .join("plugin.json")
-        .exists()
+    // 目录存在即视为有效安装（部分插件如 rust-analyzer-lsp 没有 plugin.json）
+    plugin_dir.exists()
 }
 
 /// 清理 settings.json 中无效的插件引用，确保 SessionStart hook 不被插件加载失败阻塞
@@ -572,6 +535,7 @@ pub struct SegmentConfig {
     pub context: bool,
     pub hour5: bool,
     pub mcp: bool,
+    pub cache_time: bool,
 }
 
 impl Default for SegmentConfig {
@@ -584,6 +548,7 @@ impl Default for SegmentConfig {
             context: true,
             hour5: true,
             mcp: true,
+            cache_time: true,
         }
     }
 }
@@ -617,6 +582,7 @@ pub async fn read_segment_config() -> Result<SegmentConfig, String> {
         context: seg.get("context").and_then(|v| v.as_bool()).unwrap_or(def.context),
         hour5: seg.get("hour5").and_then(|v| v.as_bool()).unwrap_or(def.hour5),
         mcp: seg.get("mcp").and_then(|v| v.as_bool()).unwrap_or(def.mcp),
+        cache_time: seg.get("cacheTime").and_then(|v| v.as_bool()).unwrap_or(def.cache_time),
     })
 }
 
@@ -642,7 +608,99 @@ pub async fn save_segment_config(config: SegmentConfig) -> Result<(), String> {
         "context": config.context,
         "hour5": config.hour5,
         "mcp": config.mcp,
+        "cacheTime": config.cache_time,
     });
+
+    let output =
+        serde_json::to_string_pretty(&raw).map_err(|e| format!("序列化失败: {}", e))?;
+    tokio::fs::write(&config_path, output)
+        .await
+        .map_err(|e| format!("写入配置失败: {}", e))?;
+    Ok(())
+}
+
+/// 进度条颜色配置
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+pub struct BarColors {
+    pub normal: String,
+    pub warning: String,
+    pub danger: String,
+}
+
+impl Default for BarColors {
+    fn default() -> Self {
+        Self {
+            normal: "green".to_string(),
+            warning: "yellow".to_string(),
+            danger: "red".to_string(),
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn read_bar_colors() -> Result<BarColors, String> {
+    let home = get_home_dir()?;
+    let config_path = home.join(".claude").join("settings.json");
+
+    if !config_path.exists() {
+        return Ok(BarColors::default());
+    }
+
+    let content = tokio::fs::read_to_string(&config_path)
+        .await
+        .map_err(|e| format!("读取配置失败: {}", e))?;
+    let raw: serde_json::Value =
+        serde_json::from_str(&content).map_err(|e| format!("解析 JSON 失败: {}", e))?;
+
+    let colors = match raw.get("zhipuBarColors").and_then(|v| v.as_object()) {
+        Some(o) => o,
+        None => return Ok(BarColors::default()),
+    };
+
+    let def = BarColors::default();
+    Ok(BarColors {
+        normal: colors
+            .get("normal")
+            .and_then(|v| v.as_str())
+            .unwrap_or(&def.normal)
+            .to_string(),
+        warning: colors
+            .get("warning")
+            .and_then(|v| v.as_str())
+            .unwrap_or(&def.warning)
+            .to_string(),
+        danger: colors
+            .get("danger")
+            .and_then(|v| v.as_str())
+            .unwrap_or(&def.danger)
+            .to_string(),
+    })
+}
+
+#[tauri::command]
+pub async fn save_bar_colors(colors: BarColors) -> Result<(), String> {
+    let home = get_home_dir()?;
+    let config_path = home.join(".claude").join("settings.json");
+
+    let mut raw: serde_json::Value = if config_path.exists() {
+        let content = tokio::fs::read_to_string(&config_path)
+            .await
+            .map_err(|e| format!("读取配置失败: {}", e))?;
+        serde_json::from_str(&content).unwrap_or(serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    if let Some(obj) = raw.as_object_mut() {
+        obj.insert(
+            "zhipuBarColors".to_string(),
+            serde_json::json!({
+                "normal": colors.normal,
+                "warning": colors.warning,
+                "danger": colors.danger,
+            }),
+        );
+    }
 
     let output =
         serde_json::to_string_pretty(&raw).map_err(|e| format!("序列化失败: {}", e))?;

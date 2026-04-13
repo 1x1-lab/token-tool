@@ -2,8 +2,10 @@
 import { ref, watch, onMounted, onBeforeUnmount } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
-import SettingCard from './SettingCard.vue'
-import IntervalSelector from './IntervalSelector.vue'
+import SettingCard from '../components/SettingCard.vue'
+import IntervalSelector from '../components/IntervalSelector.vue'
+import ToggleBtn from '../components/ToggleBtn.vue'
+import ToggleSwitch from '../components/ToggleSwitch.vue'
 
 const apiKey = defineModel<string>('apiKey')
 const endpoint = defineModel<string>('endpoint')
@@ -13,6 +15,7 @@ const saved = ref(false)
 const debugLoading = ref(false)
 const debugResult = ref<{ ok: boolean; msg: string; data?: string } | null>(null)
 const appInfo = ref('')
+const appVersion = ref('')
 
 const autoRefresh = ref(localStorage.getItem('zhipu_auto_refresh') === 'true')
 const refreshInterval = ref(Number(localStorage.getItem('zhipu_refresh_interval') || '30'))
@@ -24,6 +27,10 @@ const autoStart = ref(false)
 let autostartModule: typeof import('@tauri-apps/plugin-autostart') | null = null
 
 onMounted(async () => {
+  try {
+    const info = await invoke<Record<string, string>>('get_app_info')
+    appVersion.value = info.version || ''
+  } catch {}
   try {
     autostartModule = await import('@tauri-apps/plugin-autostart')
     autoStart.value = await autostartModule.isEnabled()
@@ -213,14 +220,7 @@ watch([apiKey, endpoint], () => {
           class="input-field"
           @input="apiKey = ($event.target as HTMLInputElement).value"
         />
-        <button class="toggle-btn" @click="showKey = !showKey" :title="showKey ? '隐藏' : '显示'">
-          <svg v-if="!showKey" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>
-          </svg>
-          <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/>
-          </svg>
-        </button>
+        <ToggleBtn v-model="showKey" />
       </div>
       <div v-if="apiKey" class="key-preview">{{ maskKey(apiKey) }}</div>
     </SettingCard>
@@ -252,9 +252,7 @@ watch([apiKey, endpoint], () => {
         </svg>
       </template>
       <template #action>
-        <button :class="['toggle-switch', { on: autoRefresh }]" @click="autoRefresh = !autoRefresh">
-          <span class="toggle-knob"></span>
-        </button>
+        <ToggleSwitch v-model="autoRefresh" />
       </template>
       <div v-if="autoRefresh" class="refresh-options">
         <IntervalSelector
@@ -289,9 +287,7 @@ watch([apiKey, endpoint], () => {
         </svg>
       </template>
       <template #action>
-        <button :class="['toggle-switch', { on: autoStart }]" @click="toggleAutoStart" @mousedown.stop>
-          <span class="toggle-knob"></span>
-        </button>
+        <ToggleSwitch :model-value="autoStart" @update:model-value="toggleAutoStart" />
       </template>
     </SettingCard>
 
@@ -345,17 +341,35 @@ watch([apiKey, endpoint], () => {
       </div>
     </SettingCard>
 
-    <SettingCard title="关于" description="ZhipuKit v0.1.0" icon-variant="warning">
+    <SettingCard title="关于" :description="`ZhipuKit v${appVersion}`" icon-variant="warning">
       <template #icon>
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>
         </svg>
       </template>
+      <a href="https://github.com/1x1-lab/zhipukit" @click.prevent="invoke('open_url', { url: 'https://github.com/1x1-lab/zhipukit' })" class="repo-link">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/></svg>
+        <span>1x1-lab/zhipukit</span>
+      </a>
     </SettingCard>
   </div>
 </template>
 
 <style scoped>
+.repo-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--accent);
+  text-decoration: none;
+  transition: opacity 0.15s;
+}
+
+.repo-link:hover {
+  opacity: 0.8;
+}
+
 .settings {
   display: flex;
   flex-direction: column;
@@ -378,24 +392,6 @@ watch([apiKey, endpoint], () => {
 .input-field {
   flex: 1;
   min-width: 0;
-}
-
-.toggle-btn {
-  width: 40px;
-  height: 40px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-xs);
-  color: var(--text-secondary);
-  transition: all 0.15s;
-}
-
-.toggle-btn:hover {
-  color: var(--text);
-  border-color: var(--text-secondary);
 }
 
 .key-preview {
@@ -475,37 +471,6 @@ watch([apiKey, endpoint], () => {
   font-weight: 600;
   transition: opacity 0.2s;
   margin-left: 48px;
-}
-
-.toggle-switch {
-  margin-left: auto;
-  width: 40px;
-  height: 22px;
-  border-radius: 11px;
-  background: var(--border);
-  position: relative;
-  transition: background 0.2s;
-  cursor: pointer;
-  flex-shrink: 0;
-}
-
-.toggle-switch.on {
-  background: var(--accent);
-}
-
-.toggle-knob {
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: #fff;
-  transition: transform 0.2s;
-}
-
-.toggle-switch.on .toggle-knob {
-  transform: translateX(18px);
 }
 
 .refresh-options {

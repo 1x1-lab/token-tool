@@ -126,6 +126,7 @@ pub fn run() {
             api::stop_auto_refresh,
             tray::open_devtools,
             tray::get_app_info,
+            tray::open_url,
             tray::update_tray_data,
             tray::confirm_minimize_to_tray,
             tray::exit_app,
@@ -142,7 +143,9 @@ pub fn run() {
             claude::save_zhipu_endpoint,
             claude::save_zhipu_cache_duration,
             claude::read_segment_config,
-            claude::save_segment_config
+            claude::save_segment_config,
+            claude::read_bar_colors,
+            claude::save_bar_colors
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

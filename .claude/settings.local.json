@@ -41,7 +41,9 @@
       "Bash(npx vue-tsc:*)",
       "Bash(npx vite:*)",
       "mcp__web-search-prime__web_search_prime",
-      "Bash(find . -name \"*.ts\" -path \"*/widgets/*\" -exec basename {} \\\\;)"
+      "Bash(find . -name \"*.ts\" -path \"*/widgets/*\" -exec basename {} \\\\;)",
+      "Read(//Users/xiaotian/.claude/plugins/marketplaces/claude-plugins-official/plugins/rust-analyzer-lsp/**)",
+      "Read(//Users/xiaotian/.claude/plugins/marketplaces/claude-plugins-official/plugins/rust-analyzer-lsp/.claude-plugin/**)"
     ]
   }
 }

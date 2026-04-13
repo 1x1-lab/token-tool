@@ -251,3 +251,8 @@ pub async fn get_app_info() -> serde_json::Value {
         "family": std::env::consts::FAMILY,
     })
 }
+
+#[tauri::command]
+pub async fn open_url(url: String) -> Result<(), String> {
+    open::that(&url).map_err(|e| format!("无法打开链接: {}", e))
+}

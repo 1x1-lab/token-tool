@@ -3,8 +3,8 @@
 // 支持 statusline 模式（缓存时间可配置，默认 5 分钟）和独立测试模式
 
 use app_lib::utils::{
-    balance_base_url, build_url, format_amount, format_remaining, format_status_bar,
-    API_PATH_BALANCE, API_PATH_CODING_PLAN,
+    ansi_color, balance_base_url, build_url, format_amount, format_remaining, format_status_bar,
+    strip_ansi, API_PATH_BALANCE, API_PATH_CODING_PLAN,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
@@ -19,30 +19,9 @@ const DEFAULT_ENDPOINT: &str = "https://open.bigmodel.cn";
 const BAR_WIDTH: usize = 10;
 
 /// 带 ANSI 颜色进度条 + 百分比
-fn progress_bar_pct(percentage: f64) -> String {
-    let bar = format_status_bar(percentage, BAR_WIDTH);
+fn progress_bar_pct(percentage: f64, bar_colors: &BarColors) -> String {
+    let bar = format_status_bar(percentage, BAR_WIDTH, Some((bar_colors.normal, bar_colors.warning, bar_colors.danger)));
     format!("{} {}%", bar, percentage)
-}
-/// 去除 ANSI 转义序列（如 \x1b[1m）
-fn strip_ansi(s: &str) -> String {
-    let mut result = String::with_capacity(s.len());
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\x1b' {
-            if chars.peek() == Some(&'[') {
-                chars.next();
-                while let Some(&next) = chars.peek() {
-                    chars.next();
-                    if next.is_ascii_alphabetic() {
-                        break;
-                    }
-                }
-            }
-        } else {
-            result.push(c);
-        }
-    }
-    result
 }
 
 fn get_home_dir() -> Result<PathBuf, String> {
@@ -196,6 +175,30 @@ fn config_hash(api_key: &str, endpoint: &str) -> String {
     format!("{:016x}", hasher.finish())
 }
 
+/// 解析模型映射：opus → ANTHROPIC_DEFAULT_OPUS_MODEL 等
+/// "opus[1m]" + 映射 "glm-5.1" → "glm-5.1[1m]"
+fn resolve_model(model: &str, config: &serde_json::Value) -> String {
+    // 分离 base name 和 context 后缀 (如 "[1m]")
+    let (base, suffix) = if let Some(idx) = model.find('[') {
+        (&model[..idx], &model[idx..])
+    } else {
+        (model, "")
+    };
+
+    let env = config.get("env");
+    let mapped = match base.to_lowercase().as_str() {
+        "opus" => env.and_then(|e| e.get("ANTHROPIC_DEFAULT_OPUS_MODEL")).and_then(|v| v.as_str()),
+        "sonnet" => env.and_then(|e| e.get("ANTHROPIC_DEFAULT_SONNET_MODEL")).and_then(|v| v.as_str()),
+        "haiku" => env.and_then(|e| e.get("ANTHROPIC_DEFAULT_HAIKU_MODEL")).and_then(|v| v.as_str()),
+        _ => None,
+    };
+
+    match mapped {
+        Some(m) if !m.is_empty() => format!("{}{}", m, suffix),
+        _ => model.to_string(),
+    }
+}
+
 /// 提前读取 settings.json 中的 api_key、endpoint 和 model（用于缓存校验和模型展示）
 fn read_config_keys() -> (Option<String>, Option<String>, Option<String>) {
     let home = match get_home_dir() {
@@ -234,7 +237,7 @@ fn read_config_keys() -> (Option<String>, Option<String>, Option<String>) {
         .get("model")
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
-        .map(String::from);
+        .map(|m| resolve_model(m, &config));
 
     (api_key, endpoint, model)
 }
@@ -267,6 +270,17 @@ fn read_cache_duration() -> i64 {
         .and_then(|v| v.as_i64())
         .filter(|&d| d > 0)
         .unwrap_or(300)
+}
+
+/// 读取缓存中的 cached_at 时间戳（毫秒）
+fn read_cached_at() -> Option<i64> {
+    let path = cache_path().ok()?;
+    if !path.exists() {
+        return None;
+    }
+    let content = std::fs::read_to_string(&path).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&content).ok()?;
+    json.get("cached_at").and_then(|v| v.as_i64())
 }
 
 /// 尝试读取缓存（有效期内且 key_hash 匹配），返回结构化配额数据
@@ -349,6 +363,7 @@ async fn main() {
     let (api_key, endpoint, settings_model) = read_config_keys();
     let stdin_data = parse_stdin_data();
     let seg_cfg = read_segment_config();
+    let bar_colors = read_bar_colors();
     let cwd = stdin_data.as_ref().and_then(|d| d.cwd.clone());
     let stdin_model = stdin_data.as_ref().and_then(|d| d.model.clone());
     // 优先使用 stdin 传入的运行时模型名（实际使用的模型），回退到 settings.json 配置
@@ -393,7 +408,7 @@ async fn main() {
                                 .duration_since(std::time::UNIX_EPOCH)
                                 .unwrap_or_default()
                                 .as_millis() as i64,
-                            &seg_cfg,
+                            &seg_cfg, &bar_colors,
                         );
                         let output = render_segments(&segments);
                         if !output.is_empty() {
@@ -407,7 +422,7 @@ async fn main() {
                     if let Some(ref m) = effective_model {
                         parts.push(format_model(m));
                     }
-                    parts.push(format_context_usage(&data.context));
+                    parts.push(format_context_usage(&data.context, &bar_colors));
                     println!("{}", parts.join(" "));
                 } else if let Some(ref m) = effective_model {
                     eprintln!("[{}] {}", m, e);
@@ -426,7 +441,7 @@ async fn main() {
         .as_millis() as i64;
 
     let ctx = stdin_data.as_ref().map(|d| &d.context);
-    let segments = build_segments(&quota, ctx, effective_model, git_branch.as_deref(), now_ms, &seg_cfg);
+    let segments = build_segments(&quota, ctx, effective_model, git_branch.as_deref(), now_ms, &seg_cfg, &bar_colors);
 
     let output = render_segments(&segments);
     if !output.is_empty() {
@@ -452,8 +467,8 @@ fn format_model(model: &str) -> String {
     format!("Model ({})", model)
 }
 
-fn format_hour5(pct: i64, next_reset: Option<i64>, now_ms: i64) -> String {
-    let mut s = format!("5h {}", progress_bar_pct(pct as f64));
+fn format_hour5(pct: i64, next_reset: Option<i64>, now_ms: i64, bar_colors: &BarColors) -> String {
+    let mut s = format!("5h {}", progress_bar_pct(pct as f64, bar_colors));
     if let Some(reset) = next_reset {
         let remaining_ms = (reset - now_ms).max(0);
         let elapsed_ms = (5 * 3600 * 1000 - remaining_ms).max(0);
@@ -462,9 +477,9 @@ fn format_hour5(pct: i64, next_reset: Option<i64>, now_ms: i64) -> String {
     s
 }
 
-fn format_mcp(used: i64, total: i64, next_reset: Option<i64>, now_ms: i64) -> String {
+fn format_mcp(used: i64, total: i64, next_reset: Option<i64>, now_ms: i64, bar_colors: &BarColors) -> String {
     let pct = (used as f64 * 100.0 / total as f64).min(100.0);
-    let mut s = format!("MCP {}", format_status_bar(pct, BAR_WIDTH));
+    let mut s = format!("MCP {}", format_status_bar(pct, BAR_WIDTH, Some((bar_colors.normal, bar_colors.warning, bar_colors.danger))));
     let mut time_info = format!("{}/{}", used, total);
     if let Some(reset) = next_reset {
         let remaining_ms = (reset - now_ms).max(0);
@@ -477,9 +492,44 @@ fn format_mcp(used: i64, total: i64, next_reset: Option<i64>, now_ms: i64) -> St
     s
 }
 
-fn format_context_usage(ctx: &ClaudeContext) -> String {
+fn format_cache_time() -> Option<String> {
+    let cached_at = read_cached_at()?;
+    // 使用系统 date 命令获取本地时区偏移，或直接从 TZ 环境变量解析
+    let offset_secs = tz_offset_secs();
+    let local_secs = (cached_at / 1000) + offset_secs;
+    let h = ((local_secs / 3600) % 24).rem_euclid(24) as u32;
+    let m = ((local_secs % 3600) / 60).rem_euclid(60) as u32;
+    let s = (local_secs % 60).rem_euclid(60) as u32;
+    Some(format!("CacheTime {:02}:{:02}:{:02}", h, m, s))
+}
+
+/// 从 TZ 环境变量获取时区偏移秒数，默认 UTC+8
+fn tz_offset_secs() -> i64 {
+    // TZ 格式如 "Asia/Shanghai" 或 "UTC+8" 或 "CST-8"
+    // 最可靠：读取 /etc/localtime 链接或 date 命令
+    // 简单方案：用 date 获取 %z
+    if let Ok(output) = std::process::Command::new("date")
+        .arg("+%z")
+        .output()
+    {
+        if output.status.success() {
+            let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            // 格式: +0800 或 -0500
+            if s.len() >= 5 {
+                let sign: i64 = if s.starts_with('-') { -1 } else { 1 };
+                let hours: i64 = s[1..3].parse().unwrap_or(0);
+                let mins: i64 = s[3..5].parse().unwrap_or(0);
+                return sign * (hours * 3600 + mins * 60);
+            }
+        }
+    }
+    // 默认 UTC+8
+    8 * 3600
+}
+
+fn format_context_usage(ctx: &ClaudeContext, bar_colors: &BarColors) -> String {
     let pct = ctx.buffered_percent();
-    let bar = format_status_bar(pct as f64, BAR_WIDTH);
+    let bar = format_status_bar(pct as f64, BAR_WIDTH, Some((bar_colors.normal, bar_colors.warning, bar_colors.danger)));
     let mut result = if ctx.current_tokens > 0 && ctx.context_window_size > 0 {
         let size_k = ctx.context_window_size / 1000;
         format!(
@@ -509,6 +559,7 @@ fn build_segments(
     git_branch: Option<&str>,
     now_ms: i64,
     seg_cfg: &SegmentConfig,
+    bar_colors: &BarColors,
 ) -> Vec<Vec<String>> {
     let mut rows: Vec<Vec<String>> = Vec::new();
 
@@ -542,25 +593,30 @@ fn build_segments(
     }
     if seg_cfg.context {
         if let Some(context) = ctx {
-            row1.push(format_context_usage(context));
+            row1.push(format_context_usage(context, bar_colors));
         }
     }
     if !row1.is_empty() {
         rows.push(row1);
     }
 
-    // Row 2: 配额行 (hour5, mcp)
+    // Row 2: 配额行 (hour5, mcp, refresh)
     let mut row2: Vec<String> = Vec::new();
     if seg_cfg.hour5 {
         if let Some(pct) = quota.hour5_pct {
-            row2.push(format_hour5(pct, quota.hour5_next_reset, now_ms));
+            row2.push(format_hour5(pct, quota.hour5_next_reset, now_ms, bar_colors));
         }
     }
     if seg_cfg.mcp {
         if let (Some(used), Some(total)) = (quota.mcp_used, quota.mcp_total) {
             if total > 0 {
-                row2.push(format_mcp(used, total, quota.mcp_next_reset, now_ms));
+                row2.push(format_mcp(used, total, quota.mcp_next_reset, now_ms, bar_colors));
             }
+        }
+    }
+    if seg_cfg.cache_time {
+        if let Some(cache_str) = format_cache_time() {
+            row2.push(cache_str);
         }
     }
     if !row2.is_empty() {
@@ -591,6 +647,7 @@ struct SegmentConfig {
     context: bool,
     hour5: bool,
     mcp: bool,
+    cache_time: bool,
 }
 
 impl Default for SegmentConfig {
@@ -603,6 +660,7 @@ impl Default for SegmentConfig {
             context: true,
             hour5: true,
             mcp: true,
+            cache_time: true,
         }
     }
 }
@@ -638,6 +696,66 @@ fn read_segment_config() -> SegmentConfig {
         context: seg.get("context").and_then(|v| v.as_bool()).unwrap_or(def.context),
         hour5: seg.get("hour5").and_then(|v| v.as_bool()).unwrap_or(def.hour5),
         mcp: seg.get("mcp").and_then(|v| v.as_bool()).unwrap_or(def.mcp),
+        cache_time: seg.get("cacheTime").and_then(|v| v.as_bool()).unwrap_or(def.cache_time),
+    }
+}
+
+/// 进度条颜色配置
+struct BarColors {
+    normal: &'static str,
+    warning: &'static str,
+    danger: &'static str,
+}
+
+impl Default for BarColors {
+    fn default() -> Self {
+        Self {
+            normal: "\x1b[32m",
+            warning: "\x1b[33m",
+            danger: "\x1b[31m",
+        }
+    }
+}
+
+/// 从 settings.json 读取 zhipuBarColors 配置
+fn read_bar_colors() -> BarColors {
+    let home = match get_home_dir() {
+        Ok(h) => h,
+        Err(_) => return BarColors::default(),
+    };
+    let config_path = home.join(".claude").join("settings.json");
+    if !config_path.exists() {
+        return BarColors::default();
+    }
+    let content = match std::fs::read_to_string(&config_path) {
+        Ok(c) => c,
+        Err(_) => return BarColors::default(),
+    };
+    let config: serde_json::Value = match serde_json::from_str(&content) {
+        Ok(v) => v,
+        Err(_) => return BarColors::default(),
+    };
+    let colors = match config.get("zhipuBarColors").and_then(|v| v.as_object()) {
+        Some(o) => o,
+        None => return BarColors::default(),
+    };
+    let def = BarColors::default();
+    BarColors {
+        normal: colors
+            .get("normal")
+            .and_then(|v| v.as_str())
+            .map(ansi_color)
+            .unwrap_or(def.normal),
+        warning: colors
+            .get("warning")
+            .and_then(|v| v.as_str())
+            .map(ansi_color)
+            .unwrap_or(def.warning),
+        danger: colors
+            .get("danger")
+            .and_then(|v| v.as_str())
+            .map(ansi_color)
+            .unwrap_or(def.danger),
     }
 }
 
