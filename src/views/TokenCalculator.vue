@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
+import { useToast } from '../composables/useToast'
+
+const toast = useToast()
 
 interface TokenCountResult {
   prompt_tokens: number
@@ -23,7 +26,6 @@ const models = [
 const text = ref('')
 const selectedModel = ref('glm-4-flash')
 const loading = ref(false)
-const error = ref('')
 const apiResult = ref<TokenCountResult | null>(null)
 
 const estimatedTokens = computed(() => {
@@ -52,21 +54,21 @@ const apiCost = computed(() => {
 const charCount = computed(() => text.value.length)
 
 async function countTokens() {
-  if (!text.value.trim()) { error.value = '请输入文本'; return }
-  if (!props.apiKey) { error.value = '请先在设置中配置 API Key'; return }
+  if (!text.value.trim()) { toast.showWarning('请输入文本'); return }
+  if (!props.apiKey) { toast.showWarning('请先在设置中配置 API Key'); return }
 
   loading.value = true
-  error.value = ''
   apiResult.value = null
 
   try {
     apiResult.value = await invoke<TokenCountResult>('count_tokens', {
       apiKey: props.apiKey,
+      endpoint: props.endpoint,
       text: text.value,
       model: selectedModel.value,
     })
   } catch (e) {
-    error.value = String(e)
+    toast.showError(String(e))
   } finally {
     loading.value = false
   }
@@ -113,13 +115,6 @@ async function countTokens() {
           <span v-else>精确计算</span>
         </button>
       </div>
-    </div>
-
-    <div v-if="error" class="error-banner">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/>
-      </svg>
-      {{ error }}
     </div>
 
     <div v-if="apiResult" class="result-card">
@@ -255,18 +250,6 @@ async function countTokens() {
   animation: spin 0.6s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
-
-.error-banner {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 12px 16px;
-  background: var(--danger-light);
-  border: 1px solid var(--danger);
-  border-radius: var(--radius-sm);
-  font-size: 13px;
-  color: var(--danger);
-}
 
 .result-card {
   padding-top: 16px;
