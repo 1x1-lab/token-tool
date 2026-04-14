@@ -1,5 +1,5 @@
 use crate::types::{AppState, BalanceInfo, CodingPlanInfo};
-use crate::utils::format_amount;
+use crate::utils::{format_amount, get_home_dir};
 use tauri::{Emitter, Manager};
 
 #[cfg(target_os = "macos")]
@@ -162,6 +162,37 @@ pub async fn update_tray_data(
     Ok(())
 }
 
+/// 从配置文件读取 minimize_to_tray 设置
+pub(crate) fn read_minimize_setting() -> Option<bool> {
+    let home = get_home_dir().ok()?;
+    let config_path = home.join(".claude").join("settings.json");
+    let content = std::fs::read_to_string(&config_path).ok()?;
+    let raw: serde_json::Value = serde_json::from_str(&content).ok()?;
+    raw.get("zhipuMinimizeToTray").and_then(|v| v.as_bool())
+}
+
+/// 保存 minimize_to_tray 设置到配置文件
+fn save_minimize_setting(minimize: bool) -> Result<(), String> {
+    let home = get_home_dir()?;
+    let config_path = home.join(".claude").join("settings.json");
+
+    let mut raw: serde_json::Value = if config_path.exists() {
+        let content = std::fs::read_to_string(&config_path)
+            .map_err(|e| format!("读取配置失败: {}", e))?;
+        serde_json::from_str(&content).unwrap_or(serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    raw["zhipuMinimizeToTray"] = serde_json::Value::Bool(minimize);
+
+    let output =
+        serde_json::to_string_pretty(&raw).map_err(|e| format!("序列化失败: {}", e))?;
+    std::fs::write(&config_path, output)
+        .map_err(|e| format!("写入配置失败: {}", e))?;
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn confirm_minimize_to_tray(
     app: tauri::AppHandle,
@@ -170,12 +201,30 @@ pub async fn confirm_minimize_to_tray(
 ) -> Result<(), String> {
     if minimize {
         *state.minimize_to_tray.lock().unwrap() = true;
+        let _ = save_minimize_setting(true);
         if let Some(window) = app.get_webview_window("main") {
             let _ = window.hide();
         }
         #[cfg(target_os = "macos")]
         let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
     }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn get_minimize_to_tray(
+    state: tauri::State<'_, AppState>,
+) -> Result<bool, String> {
+    Ok(*state.minimize_to_tray.lock().unwrap())
+}
+
+#[tauri::command]
+pub async fn set_minimize_to_tray(
+    state: tauri::State<'_, AppState>,
+    minimize: bool,
+) -> Result<(), String> {
+    *state.minimize_to_tray.lock().unwrap() = minimize;
+    save_minimize_setting(minimize)?;
     Ok(())
 }
 

@@ -26,6 +26,8 @@ const appliedInterval = ref(refreshInterval.value)
 const autoStart = ref(false)
 let autostartModule: typeof import('@tauri-apps/plugin-autostart') | null = null
 
+const closeToTray = ref(false)
+
 onMounted(async () => {
   try {
     const info = await invoke<Record<string, string>>('get_app_info')
@@ -36,6 +38,21 @@ onMounted(async () => {
     autoStart.value = await autostartModule.isEnabled()
   } catch (e) {
     console.error('autostart plugin load failed:', e)
+  }
+  try {
+    closeToTray.value = await invoke<boolean>('get_minimize_to_tray')
+  } catch {}
+  // 自动刷新已启用时，确保后端定时器在运行（避免从其他页面切过来时定时器未启动）
+  if (autoRefresh.value && apiKey.value) {
+    // 如果从未刷新过，初始化时间戳让倒计时立即生效
+    if (!localStorage.getItem('zhipu_last_refresh') || localStorage.getItem('zhipu_last_refresh') === '0') {
+      localStorage.setItem('zhipu_last_refresh', String(Date.now()))
+    }
+    invoke('start_auto_refresh', {
+      apiKey: apiKey.value,
+      endpoint: endpoint.value,
+      intervalSecs: refreshInterval.value,
+    }).catch(() => {})
   }
 })
 
@@ -54,6 +71,16 @@ async function toggleAutoStart() {
     }
   } catch (e) {
     alert('开机启动设置失败: ' + e)
+  }
+}
+
+async function toggleCloseToTray() {
+  try {
+    const newVal = !closeToTray.value
+    await invoke('set_minimize_to_tray', { minimize: newVal })
+    closeToTray.value = newVal
+  } catch (e) {
+    alert('设置失败: ' + e)
   }
 }
 
@@ -288,6 +315,17 @@ watch([apiKey, endpoint], () => {
       </template>
       <template #action>
         <ToggleSwitch :model-value="autoStart" @update:model-value="toggleAutoStart" />
+      </template>
+    </SettingCard>
+
+    <SettingCard title="关闭到托盘" description="关闭窗口时最小化到系统托盘，而不是退出应用" icon-variant="accent">
+      <template #icon>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="2" y="2" width="20" height="20" rx="2"/><path d="M9 12l2 2 4-4"/><path d="M2 17l4-4"/><path d="M22 17l-4-4"/>
+        </svg>
+      </template>
+      <template #action>
+        <ToggleSwitch :model-value="closeToTray" @update:model-value="toggleCloseToTray" />
       </template>
     </SettingCard>
 
