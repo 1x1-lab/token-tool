@@ -31,16 +31,24 @@ pub fn run() {
             minimize_to_tray: Mutex::new(false),
         })
         .setup(|app| {
-            // 开机自启时隐藏主窗口，直接后台运行
+            // 主窗口默认不可见，仅在非自启时显示
             let is_autostart = std::env::args().any(|a| a == "--autostart");
             if is_autostart {
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.hide();
-                }
+                // 自启：保持隐藏，直接托盘运行
                 let state = app.state::<AppState>();
                 *state.minimize_to_tray.lock().unwrap() = true;
                 #[cfg(target_os = "macos")]
                 let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            } else {
+                // 手动启动：显示主窗口
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+                // 读取持久化的关闭行为设置
+                let persisted = tray::read_minimize_setting().unwrap_or(false);
+                let state = app.state::<AppState>();
+                *state.minimize_to_tray.lock().unwrap() = persisted;
             }
 
             let _tray = TrayIconBuilder::with_id("main-tray")
@@ -129,6 +137,8 @@ pub fn run() {
             tray::open_url,
             tray::update_tray_data,
             tray::confirm_minimize_to_tray,
+            tray::get_minimize_to_tray,
+            tray::set_minimize_to_tray,
             tray::exit_app,
             tray::start_window_drag,
             tray::get_tray_popup_data,

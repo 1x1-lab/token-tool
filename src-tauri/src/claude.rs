@@ -1,19 +1,47 @@
 use crate::types::{ClaudeCodeConfig, ClaudeCodeStatus};
 use crate::utils::{build_shell_command, get_home_dir, strip_ansi};
 
+/// 已知的 Claude Code 安装路径（按优先级排序）
+fn known_claude_paths(home: &std::path::Path) -> Vec<std::path::PathBuf> {
+    vec![
+        home.join(".local").join("bin").join("claude"),
+        std::path::PathBuf::from("/usr/local/bin/claude"),
+        std::path::PathBuf::from("/opt/homebrew/bin/claude"),
+        home.join(".npm-global").join("bin").join("claude"),
+        home.join(".claude").join("local").join("bin").join("claude"),
+    ]
+}
+
+/// 直接检查已知路径是否存在 claude 二进制
+fn find_claude_at_known_paths(home: &std::path::Path) -> Option<std::path::PathBuf> {
+    known_claude_paths(home).into_iter().find(|p| p.exists())
+}
+
 #[tauri::command]
 pub async fn detect_claude_code() -> Result<ClaudeCodeStatus, String> {
-    let config_path = get_home_dir()
-        .ok()
-        .map(|h| {
-            h.join(".claude")
-                .join("settings.json")
-                .to_string_lossy()
-                .to_string()
-        });
+    let home = get_home_dir().ok();
+    let config_path = home.as_ref().map(|h| {
+        h.join(".claude")
+            .join("settings.json")
+            .to_string_lossy()
+            .to_string()
+    });
 
-    // macOS .app 不继承用户 shell PATH，需要用 login shell 执行
-    // Windows: cmd /C 不需要 -c 参数，且需要隐藏控制台窗口
+    // 1) 先直接检查已知安装路径（最可靠，不依赖 shell PATH）
+    if let Some(ref h) = home {
+        if let Some(found) = find_claude_at_known_paths(h) {
+            let path = found.to_string_lossy().to_string();
+            let version = run_claude_version(&path).await;
+            return Ok(ClaudeCodeStatus {
+                installed: true,
+                version,
+                path: Some(path),
+                config_path,
+            });
+        }
+    }
+
+    // 2) 回退到 shell which 检测
     let (shell, which_args, version_args) = if cfg!(windows) {
         (
             "cmd",
@@ -21,10 +49,11 @@ pub async fn detect_claude_code() -> Result<ClaudeCodeStatus, String> {
             vec!["/C", "claude --version"],
         )
     } else {
+        // 使用 -il 加载 interactive login shell，确保 .zshrc 中的 PATH 生效
         (
             "/bin/zsh",
-            vec!["-l", "-c", "which claude"],
-            vec!["-l", "-c", "claude --version"],
+            vec!["-il", "-c", "which claude 2>/dev/null"],
+            vec!["-il", "-c", "claude --version 2>/dev/null"],
         )
     };
 
@@ -49,18 +78,22 @@ pub async fn detect_claude_code() -> Result<ClaudeCodeStatus, String> {
         .trim()
         .to_string();
 
-    let version_output = build_shell_command(shell, &version_args)
-        .output()
-        .await
-        .ok();
-
-    let version = version_output.and_then(|o| {
-        if o.status.success() {
-            Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
-        } else {
-            None
-        }
-    });
+    let version = if !path.is_empty() {
+        run_claude_version(&path).await
+    } else {
+        // fallback: 用 shell 的 version 命令
+        let version_output = build_shell_command(shell, &version_args)
+            .output()
+            .await
+            .ok();
+        version_output.and_then(|o| {
+            if o.status.success() {
+                Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
+            } else {
+                None
+            }
+        })
+    };
 
     Ok(ClaudeCodeStatus {
         installed: true,
@@ -68,6 +101,20 @@ pub async fn detect_claude_code() -> Result<ClaudeCodeStatus, String> {
         path: Some(path),
         config_path,
     })
+}
+
+/// 运行 claude --version 获取版本号
+async fn run_claude_version(claude_path: &str) -> Option<String> {
+    let mut cmd = tokio::process::Command::new(claude_path);
+    cmd.arg("--version");
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(crate::utils::CREATE_NO_WINDOW);
+    let output = cmd.output().await.ok()?;
+    if output.status.success() {
+        Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        None
+    }
 }
 
 #[tauri::command]

@@ -19,7 +19,7 @@
 - 预估费用计算
 
 ### Claude Code 配置
-- 自动检测本机 Claude Code CLI 安装状态、版本号、路径
+- 自动检测本机 Claude Code CLI 安装状态、版本号、路径（支持多路径探测 + Shell 检测双重机制）
 - 读取并展示 `~/.claude/settings.json` 配置文件
 - 可编辑配置：
   - 默认模型（model）
@@ -32,6 +32,9 @@
 ### 设置
 - API Key 管理（本地存储）
 - 支持国内版（open.bigmodel.cn）和国际版（api.z.ai）
+- 自动刷新倒计时显示
+- 关闭到托盘开关
+- 开机自启动
 - 调试工具（API 连通性测试）
 - 开发者工具（DevTools、应用信息）
 
@@ -39,6 +42,7 @@
 - 点击托盘图标弹出快捷面板，显示余额和额度概览
 - 双击托盘图标显示主窗口
 - 关闭窗口最小化到托盘继续运行
+- 开机自启时直接后台运行，不闪现窗口
 
 ## 技术栈
 
@@ -72,18 +76,25 @@ npm run tauri build
 
 ```
 src/                      # 前端源码
-  App.vue                 # 主布局（侧边栏 + 页面切换）
+  App.vue                 # 主布局（侧边栏 + 页面切换、关闭确认对话框）
   main.ts                 # 入口
   TrayPopup.vue           # 系统托盘弹窗
   tray-popup-main.ts      # 托盘弹窗入口
-  components/
+  views/
     BalanceQuery.vue      # 余额查询页面
     TokenCalculator.vue   # Token 计算页面
     ClaudeConfig.vue      # Claude Code 配置页面
     SettingsView.vue      # 设置页面
+  composables/
+    useBalanceCache.ts    # 余额数据缓存与自动刷新事件监听
 src-tauri/
   src/
-    lib.rs                # Rust 后端（API 调用、自动刷新、Token 计算、Claude Code 配置管理）
+    lib.rs                # 应用入口（窗口管理、托盘、开机自启隐藏）
+    api.rs                # API 调用、自动刷新定时器
+    claude.rs             # Claude Code 检测与配置管理
+    tray.rs               # 托盘交互、关闭到托盘设置持久化
+    types.rs              # 共享类型定义
+    utils.rs              # 工具函数
   tauri.conf.json         # Tauri 配置
   Cargo.toml              # Rust 依赖
 ```
