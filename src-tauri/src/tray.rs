@@ -1,4 +1,5 @@
 use crate::types::{AppState, BalanceInfo, CodingPlanInfo};
+use std::time::Instant;
 use crate::utils::{format_amount, get_home_dir};
 use tauri::{Emitter, Manager};
 
@@ -206,6 +207,7 @@ pub async fn confirm_minimize_to_tray(
         if let Some(window) = app.get_webview_window("main") {
             let _ = window.hide();
         }
+        *state.main_hidden_at.lock().unwrap() = Some(Instant::now());
         #[cfg(target_os = "macos")]
         let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
     }
@@ -271,12 +273,22 @@ pub async fn resize_popup(
 }
 
 #[tauri::command]
-pub async fn tray_show_main(app: tauri::AppHandle) -> Result<(), String> {
+pub async fn tray_show_main(app: tauri::AppHandle, state: tauri::State<'_, AppState>) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
     if let Some(window) = app.get_webview_window("main") {
+        // 隐藏超过 5 分钟则重新加载，防止 WebView 进程被 macOS 终止导致白屏
+        let should_reload = {
+            let hidden_at = state.main_hidden_at.lock().unwrap();
+            hidden_at.map(|t: Instant| t.elapsed().as_secs() > 300).unwrap_or(false)
+        };
         let _ = window.show();
         let _ = window.set_focus();
+        if should_reload {
+            if let Ok(url) = window.url() {
+                let _ = window.navigate(url);
+            }
+        }
     }
     if let Some(popup) = app.get_webview_window("tray-popup") {
         let _ = popup.hide();

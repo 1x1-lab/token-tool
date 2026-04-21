@@ -29,6 +29,7 @@ pub fn run() {
             refresh_handle: Mutex::new(None),
             tray_data: Mutex::new(types::TrayData::default()),
             minimize_to_tray: Mutex::new(false),
+            main_hidden_at: Mutex::new(None),
         })
         .setup(|app| {
             // 主窗口默认不可见，仅在非自启时显示
@@ -72,8 +73,21 @@ pub fn run() {
                         TrayIconEvent::DoubleClick { .. } => {
                             let app = tray.app_handle();
                             if let Some(window) = app.get_webview_window("main") {
+                                // 隐藏超过 5 分钟则重新加载，防止 WebView 进程被 macOS 终止导致白屏
+                                let should_reload = {
+                                    let state = app.state::<AppState>();
+                                    let x = state.main_hidden_at.lock().unwrap()
+                                        .map(|t| t.elapsed().as_secs() > 300)
+                                        .unwrap_or(false);
+                                    x
+                                };
                                 let _ = window.show();
                                 let _ = window.set_focus();
+                                if should_reload {
+                                    if let Ok(url) = window.url() {
+                                        let _ = window.navigate(url);
+                                    }
+                                }
                             }
                             if let Some(popup) = app.get_webview_window("tray-popup") {
                                 let _ = popup.hide();
@@ -101,6 +115,11 @@ pub fn run() {
                             api.prevent_close();
                             if let Some(w) = app_handle.get_webview_window("main") {
                                 let _ = w.hide();
+                            }
+                            // 记录隐藏时刻，用于判断是否需要重新加载
+                            {
+                                let state = app_handle.state::<AppState>();
+                                *state.main_hidden_at.lock().unwrap() = Some(std::time::Instant::now());
                             }
                             #[cfg(target_os = "macos")]
                             let _ = app_handle.set_activation_policy(tauri::ActivationPolicy::Accessory);
