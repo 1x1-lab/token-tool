@@ -29,7 +29,8 @@ pub(crate) fn show_popup(app: &tauri::AppHandle) -> Result<(), String> {
         return Ok(());
     }
 
-    position_popup(app, &window)?;
+    // 定位失败不阻止窗口显示（Mac 重启后屏幕信息可能暂不可用）
+    let _ = position_popup(app, &window);
     let _ = window.show();
     let _ = window.set_focus();
     let _ = app.emit_to("tray-popup", "popup-shown", ());
