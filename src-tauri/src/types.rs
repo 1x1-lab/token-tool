@@ -71,4 +71,6 @@ pub struct AppState {
     pub refresh_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
     pub tray_data: Mutex<TrayData>,
     pub minimize_to_tray: Mutex<bool>,
+    /// 主窗口隐藏时刻，用于判断是否需要重新加载 WebView
+    pub main_hidden_at: Mutex<Option<std::time::Instant>>,
 }
